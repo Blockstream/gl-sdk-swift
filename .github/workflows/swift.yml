@@ -1,0 +1,101 @@
+name: Publish Swift Bindings
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Branch to build'
+        required: true
+        type: string
+
+jobs:
+  build-tag-release:
+    name: Build, tag, and release the GL SDK Swift bindings
+    runs-on: macos-15
+    steps:
+      - name: ENV
+        run: env
+        
+      - name: Set release version
+        run: |
+          echo "VERSION=$(echo ${{ inputs.version }} | sed 's/bindings_//')" >> $GITHUB_ENV
+          
+      - name: Version
+        run: |
+          echo "New tag: ${VERSION}"
+          
+      - name: Setup rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: x86_64-apple-ios,aarch64-apple-ios,aarch64-apple-ios-sim
+
+
+      - name: Setup Task
+        run: |
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+
+      - name: Checkout greenlight repo
+        # The public greenlight contains the gl-sdk, as well as this
+        # very repository as a submodule. By checking out the parent
+        # repo, we get the full context, as if this were just part of
+        # that parent repo.
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          repository: Blockstream/greenlight
+          ref: ${{ inputs.version }}
+          path: .
+          
+      - uses: Swatinem/rust-cache@v2
+        
+      - name: Build Swift bindings
+        run: |
+          env
+          pwd
+          ls -lha
+          task build:swift
+        
+      - name: Compress XCFramework
+        working-directory: target
+        run: |
+          zip -9 -r glsdkFFI.xcframework.zip glsdkFFI.xcframework
+          echo "XCF_CHECKSUM=`swift package compute-checksum glsdkFFI.xcframework.zip`" >> $GITHUB_ENV
+      - name: Checksum
+        run: |
+          echo "XCF_CHECKSUM: ${XCF_CHECKSUM}"
+          
+      - name: Create package files from templates
+        working-directory: gl-sdk-swift
+        run: |
+          envsubst <templates/lwkFFI.podspec >lwkFFI.podspec
+          envsubst <templates/LiquidWalletKit.podspec >LiquidWalletKit.podspec
+          envsubst <templates/Package.swift >Package.swift
+      - name: Copy sources
+        working-directory: gl-sdk-swift
+        run: |
+          cp ../target/swift/lwk.swift Sources/LiquidWalletKit/LiquidWalletKit.swift
+      - name: Tag the Swift bindings
+        working-directory: gl-sdk-swift
+        run: |
+          git add Package.swift Sources lwkFFI.podspec LiquidWalletKit.podspec
+          git commit -m "Bump Liquid Wallet Kit to version ${VERSION}"
+          git tag ${VERSION} -m "${VERSION}"
+          git push
+          git push --tags
+      - name: Release and attach XCFramework binary artifact
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "target/lwkFFI.xcframework.zip"
+          tag: ${{ env.VERSION }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ env.VERSION }}
+          prerelease: true
+          
+      #- name: Push update to Cocoapods trunk
+      #  env:
+      #    COCOAPODS_TRUNK_TOKEN: ${{secrets.COCOAPODS_TRUNK_TOKEN}}
+      #  run: |
+      #    pod trunk push lwkFFI.podspec --allow-warnings
+      #    pod trunk push LiquidWalletKit.podspec --allow-warnings --synchronous
