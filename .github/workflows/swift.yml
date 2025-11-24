@@ -6,6 +6,7 @@ on:
         description: 'Branch to build'
         required: true
         type: string
+        default: '202511-gl-sdk-swift'
 
 jobs:
   build-tag-release:
@@ -35,6 +36,8 @@ jobs:
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout greenlight repo
         # The public greenlight contains the gl-sdk, as well as this
@@ -47,14 +50,21 @@ jobs:
           repository: Blockstream/greenlight
           ref: ${{ inputs.version }}
           path: .
+
+      - name: Update the gl-sdk-swift repo
+        working-directory: libs/gl-sdk-swift
+        run: |
+          git checkout main
+          
           
       - uses: Swatinem/rust-cache@v2
         
       - name: Build Swift bindings
         run: |
-          env
-          pwd
-          ls -lha
+          task build:ios-apple-aarch64
+          task build:ios-apple-x86_64
+          task build:ios-sim-apple-aarch64
+          ls -lha target/
           task build:swift
         
       - name: Compress XCFramework
@@ -67,27 +77,33 @@ jobs:
           echo "XCF_CHECKSUM: ${XCF_CHECKSUM}"
           
       - name: Create package files from templates
-        working-directory: gl-sdk-swift
+        working-directory: libs/gl-sdk-swift
         run: |
-          envsubst <templates/lwkFFI.podspec >lwkFFI.podspec
-          envsubst <templates/LiquidWalletKit.podspec >LiquidWalletKit.podspec
+          envsubst <templates/glsdkFFI.podspec >glsdkFFI.podspec
+          envsubst <templates/GreenlightSDK.podspec >GreenlightSDK.podspec
           envsubst <templates/Package.swift >Package.swift
+          
       - name: Copy sources
-        working-directory: gl-sdk-swift
+        working-directory: libs/gl-sdk-swift
         run: |
-          cp ../target/swift/lwk.swift Sources/LiquidWalletKit/LiquidWalletKit.swift
+          pwd
+          ls -lha
+          ls -lha Sources/
+          cp ../../target/swift/glsdk.swift Sources/GreenlightSDK/GreenlightSDK.swift
+          
       - name: Tag the Swift bindings
-        working-directory: gl-sdk-swift
+        working-directory: libs/gl-sdk-swift
         run: |
-          git add Package.swift Sources lwkFFI.podspec LiquidWalletKit.podspec
-          git commit -m "Bump Liquid Wallet Kit to version ${VERSION}"
+          git add Package.swift Sources glsdkFFI.podspec GreenlightSDK.podspec
+          git commit -m "Bump Greenlight SDK to version ${VERSION}"
           git tag ${VERSION} -m "${VERSION}"
           git push
           git push --tags
+          
       - name: Release and attach XCFramework binary artifact
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "target/lwkFFI.xcframework.zip"
+          artifacts: "target/glsdkFFI.xcframework.zip"
           tag: ${{ env.VERSION }}
           token: ${{ secrets.GITHUB_TOKEN }}
           name: ${{ env.VERSION }}
