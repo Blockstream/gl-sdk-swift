@@ -66,9 +66,8 @@ jobs:
         
       - name: Build Swift bindings
         run: |
-          task build:ios-apple-aarch64
-          task build:ios-apple-x86_64
-          task build:ios-sim-apple-aarch64
+          task build:ios
+          task build:ios-sim
           ls -lha target/
           task build:swift
         
