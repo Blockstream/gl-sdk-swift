@@ -395,7 +395,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -681,6 +687,8 @@ public func FfiConverterTypeConfig_lower(_ value: Config) -> UnsafeMutableRawPoi
  */
 public protocol CredentialsProtocol: AnyObject, Sendable {
     
+    func nodeId() throws  -> Data
+    
     func save() throws  -> Data
     
 }
@@ -750,6 +758,13 @@ public static func load(raw: Data)throws  -> Credentials  {
 }
     
 
+    
+open func nodeId()throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_credentials_node_id(self.uniffiClonePointer(),$0
+    )
+})
+}
     
 open func save()throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeError_lift) {
@@ -1113,6 +1128,20 @@ public protocol NodeProtocol: AnyObject, Sendable {
     func disconnect() throws 
     
     /**
+     * Collect a diagnostic snapshot of the node and SDK state.
+     *
+     * Returns a pretty-printed JSON string with shape:
+     * `{ "timestamp": <unix-secs>, "node": { ... }, "sdk": { "version": ..., "node_state": ... } }`.
+     * The `node` object contains one entry per CLN RPC (`getinfo`,
+     * `listpeerchannels`, `listfunds`); each value is the serialized
+     * response, or `{ "error": "..." }` if that RPC failed. Payment and
+     * invoice history are deliberately excluded to avoid leaking
+     * preimages, payment hashes, bolt11 strings, and labels into support
+     * dumps. Intended for support tickets.
+     */
+    func generateDiagnosticData() throws  -> String
+    
+    /**
      * Get information about the node.
      *
      * Returns basic information about the node including its ID,
@@ -1129,7 +1158,6 @@ public protocol NodeProtocol: AnyObject, Sendable {
     func listFunds() throws  -> ListFundsResponse
     
     /**
-     * List all invoices (received payment requests).
      * List invoices (received payment requests).
      * All parameters are optional filters; pass None to fetch all.
      */
@@ -1166,6 +1194,40 @@ public protocol NodeProtocol: AnyObject, Sendable {
      * status.
      */
     func listPeers() throws  -> ListPeersResponse
+    
+    /**
+     * Execute an LNURL-pay flow (LUD-06).
+     *
+     * Sends the chosen amount (and optional comment) to the service's
+     * callback, receives and validates a BOLT11 invoice, pays it, and
+     * processes any success action (LUD-09/10).
+     *
+     * Call the top-level `parse_input` first to obtain the
+     * `LnUrlPayRequestData`, then build an `LnUrlPayRequest` with the
+     * user's chosen amount.
+     */
+    func lnurlPay(request: LnUrlPayRequest) throws  -> LnUrlPayResult
+    
+    /**
+     * Execute an LNURL-withdraw flow (LUD-03).
+     *
+     * Creates an invoice on this node for the requested amount, sends
+     * it to the service's callback URL, and the service pays it
+     * asynchronously.
+     *
+     * Call the top-level `parse_input` first to obtain the
+     * `LnUrlWithdrawRequestData`, then build an `LnUrlWithdrawRequest`
+     * with the user's chosen amount.
+     */
+    func lnurlWithdraw(request: LnUrlWithdrawRequest) throws  -> LnUrlWithdrawResult
+    
+    /**
+     * Get a snapshot of the node's balances, capacity, and connectivity.
+     *
+     * Aggregates data from multiple RPCs into a single `NodeState`.
+     * Queries the node live on each call — not cached.
+     */
+    func nodeState() throws  -> NodeState
     
     /**
      * Generate a fresh on-chain Bitcoin address for receiving funds.
@@ -1269,15 +1331,7 @@ open class Node: NodeProtocol, @unchecked Sendable {
     public func uniffiClonePointer() -> UnsafeMutableRawPointer {
         return try! rustCall { uniffi_glsdk_fn_clone_node(self.pointer, $0) }
     }
-public convenience init(credentials: Credentials)throws  {
-    let pointer =
-        try rustCallWithError(FfiConverterTypeError_lift) {
-    uniffi_glsdk_fn_constructor_node_new(
-        FfiConverterTypeCredentials_lower(credentials),$0
-    )
-}
-    self.init(unsafeFromRawPointer: pointer)
-}
+    // No primary constructor declared for this class.
 
     deinit {
         guard let pointer = pointer else {
@@ -1313,6 +1367,25 @@ open func disconnect()throws   {try rustCallWithError(FfiConverterTypeError_lift
 }
     
     /**
+     * Collect a diagnostic snapshot of the node and SDK state.
+     *
+     * Returns a pretty-printed JSON string with shape:
+     * `{ "timestamp": <unix-secs>, "node": { ... }, "sdk": { "version": ..., "node_state": ... } }`.
+     * The `node` object contains one entry per CLN RPC (`getinfo`,
+     * `listpeerchannels`, `listfunds`); each value is the serialized
+     * response, or `{ "error": "..." }` if that RPC failed. Payment and
+     * invoice history are deliberately excluded to avoid leaking
+     * preimages, payment hashes, bolt11 strings, and labels into support
+     * dumps. Intended for support tickets.
+     */
+open func generateDiagnosticData()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_node_generate_diagnostic_data(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
      * Get information about the node.
      *
      * Returns basic information about the node including its ID,
@@ -1339,7 +1412,6 @@ open func listFunds()throws  -> ListFundsResponse  {
 }
     
     /**
-     * List all invoices (received payment requests).
      * List invoices (received payment requests).
      * All parameters are optional filters; pass None to fetch all.
      */
@@ -1412,6 +1484,57 @@ open func listPeerChannels()throws  -> ListPeerChannelsResponse  {
 open func listPeers()throws  -> ListPeersResponse  {
     return try  FfiConverterTypeListPeersResponse_lift(try rustCallWithError(FfiConverterTypeError_lift) {
     uniffi_glsdk_fn_method_node_list_peers(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Execute an LNURL-pay flow (LUD-06).
+     *
+     * Sends the chosen amount (and optional comment) to the service's
+     * callback, receives and validates a BOLT11 invoice, pays it, and
+     * processes any success action (LUD-09/10).
+     *
+     * Call the top-level `parse_input` first to obtain the
+     * `LnUrlPayRequestData`, then build an `LnUrlPayRequest` with the
+     * user's chosen amount.
+     */
+open func lnurlPay(request: LnUrlPayRequest)throws  -> LnUrlPayResult  {
+    return try  FfiConverterTypeLnUrlPayResult_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_node_lnurl_pay(self.uniffiClonePointer(),
+        FfiConverterTypeLnUrlPayRequest_lower(request),$0
+    )
+})
+}
+    
+    /**
+     * Execute an LNURL-withdraw flow (LUD-03).
+     *
+     * Creates an invoice on this node for the requested amount, sends
+     * it to the service's callback URL, and the service pays it
+     * asynchronously.
+     *
+     * Call the top-level `parse_input` first to obtain the
+     * `LnUrlWithdrawRequestData`, then build an `LnUrlWithdrawRequest`
+     * with the user's chosen amount.
+     */
+open func lnurlWithdraw(request: LnUrlWithdrawRequest)throws  -> LnUrlWithdrawResult  {
+    return try  FfiConverterTypeLnUrlWithdrawResult_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_node_lnurl_withdraw(self.uniffiClonePointer(),
+        FfiConverterTypeLnUrlWithdrawRequest_lower(request),$0
+    )
+})
+}
+    
+    /**
+     * Get a snapshot of the node's balances, capacity, and connectivity.
+     *
+     * Aggregates data from multiple RPCs into a single `NodeState`.
+     * Queries the node live on each call — not cached.
+     */
+open func nodeState()throws  -> NodeState  {
+    return try  FfiConverterTypeNodeState_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_node_node_state(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1561,6 +1684,287 @@ public func FfiConverterTypeNode_lift(_ pointer: UnsafeMutableRawPointer) throws
 #endif
 public func FfiConverterTypeNode_lower(_ value: Node) -> UnsafeMutableRawPointer {
     return FfiConverterTypeNode.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Configurable Node construction. See module docs.
+ *
+ * All fields are immutable after construction. Each `with_*` setter
+ * returns a fresh `Arc<NodeBuilder>` that shares ownership of any
+ * previously-installed modifiers via `Arc<dyn …>`. No interior
+ * mutability, no locks — the builder is a value, not a state
+ * machine.
+ */
+public protocol NodeBuilderProtocol: AnyObject, Sendable {
+    
+    /**
+     * Connect to an existing node using saved credentials and return
+     * a connected Node with any configured modifiers applied.
+     *
+     * If `mnemonic` is `Some(...)`, the SDK spawns a signer for the
+     * connected Node. If `None`, the Node is signerless and signing
+     * happens elsewhere (paired device, CLN node's local signer,
+     * hardware signer).
+     */
+    func connect(credentials: Data, mnemonic: String?) throws  -> Node
+    
+    /**
+     * Recover credentials for an existing node and return a
+     * connected Node with any configured modifiers applied.
+     *
+     * `mnemonic` is required — recovery drives the signer to
+     * authenticate.
+     */
+    func recover(mnemonic: String) throws  -> Node
+    
+    /**
+     * Register a new Greenlight node and return a connected Node
+     * with the SDK signer running and any configured modifiers
+     * applied.
+     *
+     * `mnemonic` is required — registration drives the signer to
+     * sign the registration challenge, so the SDK must hold the
+     * seed for this call.
+     */
+    func register(mnemonic: String, inviteCode: String?) throws  -> Node
+    
+    /**
+     * Try to recover; if the node doesn't exist, register a new one.
+     *
+     * `mnemonic` is required — both recover and register drive the
+     * signer.
+     */
+    func registerOrRecover(mnemonic: String, inviteCode: String?) throws  -> Node
+    
+    /**
+     * Install a node event listener. Events fire from the moment the
+     * gRPC stream is established by the build call (`register` /
+     * `recover` / `connect` / …), so attach the listener via the
+     * builder rather than after the fact to capture events from the
+     * very first moment.
+     *
+     * Returns a new builder that shares the rest of the
+     * configuration. Build calls on the returned builder will
+     * install the listener; the original builder is unchanged.
+     */
+    func withEventListener(listener: NodeEventListener)  -> NodeBuilder
+    
+}
+/**
+ * Configurable Node construction. See module docs.
+ *
+ * All fields are immutable after construction. Each `with_*` setter
+ * returns a fresh `Arc<NodeBuilder>` that shares ownership of any
+ * previously-installed modifiers via `Arc<dyn …>`. No interior
+ * mutability, no locks — the builder is a value, not a state
+ * machine.
+ */
+open class NodeBuilder: NodeBuilderProtocol, @unchecked Sendable {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_glsdk_fn_clone_nodebuilder(self.pointer, $0) }
+    }
+    /**
+     * Create a builder for a Node with `config`. No I/O happens
+     * until you call `connect` / `register` / `recover` /
+     * `register_or_recover`.
+     */
+public convenience init(config: Config) {
+    let pointer =
+        try! rustCall() {
+    uniffi_glsdk_fn_constructor_nodebuilder_new(
+        FfiConverterTypeConfig_lower(config),$0
+    )
+}
+    self.init(unsafeFromRawPointer: pointer)
+}
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_glsdk_fn_free_nodebuilder(pointer, $0) }
+    }
+
+    
+
+    
+    /**
+     * Connect to an existing node using saved credentials and return
+     * a connected Node with any configured modifiers applied.
+     *
+     * If `mnemonic` is `Some(...)`, the SDK spawns a signer for the
+     * connected Node. If `None`, the Node is signerless and signing
+     * happens elsewhere (paired device, CLN node's local signer,
+     * hardware signer).
+     */
+open func connect(credentials: Data, mnemonic: String?)throws  -> Node  {
+    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_nodebuilder_connect(self.uniffiClonePointer(),
+        FfiConverterData.lower(credentials),
+        FfiConverterOptionString.lower(mnemonic),$0
+    )
+})
+}
+    
+    /**
+     * Recover credentials for an existing node and return a
+     * connected Node with any configured modifiers applied.
+     *
+     * `mnemonic` is required — recovery drives the signer to
+     * authenticate.
+     */
+open func recover(mnemonic: String)throws  -> Node  {
+    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_nodebuilder_recover(self.uniffiClonePointer(),
+        FfiConverterString.lower(mnemonic),$0
+    )
+})
+}
+    
+    /**
+     * Register a new Greenlight node and return a connected Node
+     * with the SDK signer running and any configured modifiers
+     * applied.
+     *
+     * `mnemonic` is required — registration drives the signer to
+     * sign the registration challenge, so the SDK must hold the
+     * seed for this call.
+     */
+open func register(mnemonic: String, inviteCode: String?)throws  -> Node  {
+    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_nodebuilder_register(self.uniffiClonePointer(),
+        FfiConverterString.lower(mnemonic),
+        FfiConverterOptionString.lower(inviteCode),$0
+    )
+})
+}
+    
+    /**
+     * Try to recover; if the node doesn't exist, register a new one.
+     *
+     * `mnemonic` is required — both recover and register drive the
+     * signer.
+     */
+open func registerOrRecover(mnemonic: String, inviteCode: String?)throws  -> Node  {
+    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_method_nodebuilder_register_or_recover(self.uniffiClonePointer(),
+        FfiConverterString.lower(mnemonic),
+        FfiConverterOptionString.lower(inviteCode),$0
+    )
+})
+}
+    
+    /**
+     * Install a node event listener. Events fire from the moment the
+     * gRPC stream is established by the build call (`register` /
+     * `recover` / `connect` / …), so attach the listener via the
+     * builder rather than after the fact to capture events from the
+     * very first moment.
+     *
+     * Returns a new builder that shares the rest of the
+     * configuration. Build calls on the returned builder will
+     * install the listener; the original builder is unchanged.
+     */
+open func withEventListener(listener: NodeEventListener) -> NodeBuilder  {
+    return try!  FfiConverterTypeNodeBuilder_lift(try! rustCall() {
+    uniffi_glsdk_fn_method_nodebuilder_with_event_listener(self.uniffiClonePointer(),
+        FfiConverterCallbackInterfaceNodeEventListener_lower(listener),$0
+    )
+})
+}
+    
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNodeBuilder: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = NodeBuilder
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> NodeBuilder {
+        return NodeBuilder(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: NodeBuilder) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NodeBuilder {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: NodeBuilder, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeBuilder_lift(_ pointer: UnsafeMutableRawPointer) throws -> NodeBuilder {
+    return try FfiConverterTypeNodeBuilder.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeBuilder_lower(_ value: NodeBuilder) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeNodeBuilder.lower(value)
 }
 
 
@@ -2048,19 +2452,37 @@ public func FfiConverterTypeSigner_lower(_ value: Signer) -> UnsafeMutableRawPoi
 
 
 public struct FundChannel {
-    public var peerId: Data
+    /**
+     * Peer node public key as lowercase hex (66 chars).
+     */
+    public var peerId: String
     public var ourAmountMsat: UInt64
     public var amountMsat: UInt64
-    public var fundingTxid: Data
+    /**
+     * Funding transaction id as lowercase hex (64 chars).
+     */
+    public var fundingTxid: String
     public var fundingOutput: UInt32
     public var connected: Bool
     public var state: ChannelState
     public var shortChannelId: String?
-    public var channelId: Data?
+    /**
+     * Channel id as lowercase hex (64 chars).
+     */
+    public var channelId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(peerId: Data, ourAmountMsat: UInt64, amountMsat: UInt64, fundingTxid: Data, fundingOutput: UInt32, connected: Bool, state: ChannelState, shortChannelId: String?, channelId: Data?) {
+    public init(
+        /**
+         * Peer node public key as lowercase hex (66 chars).
+         */peerId: String, ourAmountMsat: UInt64, amountMsat: UInt64, 
+        /**
+         * Funding transaction id as lowercase hex (64 chars).
+         */fundingTxid: String, fundingOutput: UInt32, connected: Bool, state: ChannelState, shortChannelId: String?, 
+        /**
+         * Channel id as lowercase hex (64 chars).
+         */channelId: String?) {
         self.peerId = peerId
         self.ourAmountMsat = ourAmountMsat
         self.amountMsat = amountMsat
@@ -2132,28 +2554,28 @@ public struct FfiConverterTypeFundChannel: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FundChannel {
         return
             try FundChannel(
-                peerId: FfiConverterData.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf), 
                 ourAmountMsat: FfiConverterUInt64.read(from: &buf), 
                 amountMsat: FfiConverterUInt64.read(from: &buf), 
-                fundingTxid: FfiConverterData.read(from: &buf), 
+                fundingTxid: FfiConverterString.read(from: &buf), 
                 fundingOutput: FfiConverterUInt32.read(from: &buf), 
                 connected: FfiConverterBool.read(from: &buf), 
                 state: FfiConverterTypeChannelState.read(from: &buf), 
                 shortChannelId: FfiConverterOptionString.read(from: &buf), 
-                channelId: FfiConverterOptionData.read(from: &buf)
+                channelId: FfiConverterOptionString.read(from: &buf)
         )
     }
 
     public static func write(_ value: FundChannel, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.peerId, into: &buf)
+        FfiConverterString.write(value.peerId, into: &buf)
         FfiConverterUInt64.write(value.ourAmountMsat, into: &buf)
         FfiConverterUInt64.write(value.amountMsat, into: &buf)
-        FfiConverterData.write(value.fundingTxid, into: &buf)
+        FfiConverterString.write(value.fundingTxid, into: &buf)
         FfiConverterUInt32.write(value.fundingOutput, into: &buf)
         FfiConverterBool.write(value.connected, into: &buf)
         FfiConverterTypeChannelState.write(value.state, into: &buf)
         FfiConverterOptionString.write(value.shortChannelId, into: &buf)
-        FfiConverterOptionData.write(value.channelId, into: &buf)
+        FfiConverterOptionString.write(value.channelId, into: &buf)
     }
 }
 
@@ -2174,22 +2596,42 @@ public func FfiConverterTypeFundChannel_lower(_ value: FundChannel) -> RustBuffe
 
 
 public struct FundOutput {
-    public var txid: Data
+    /**
+     * Transaction id as lowercase hex (64 chars).
+     */
+    public var txid: String
     public var output: UInt32
     public var amountMsat: UInt64
     public var status: OutputStatus
     public var address: String?
     public var blockheight: UInt32?
+    /**
+     * True when this UTXO is currently reserved by an in-flight PSBT
+     * (e.g. a channel-open or fund-send that has not been broadcast or
+     * abandoned). Reserved UTXOs are not spendable and must be excluded
+     * from the wallet's spendable balance.
+     */
+    public var reserved: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(txid: Data, output: UInt32, amountMsat: UInt64, status: OutputStatus, address: String?, blockheight: UInt32?) {
+    public init(
+        /**
+         * Transaction id as lowercase hex (64 chars).
+         */txid: String, output: UInt32, amountMsat: UInt64, status: OutputStatus, address: String?, blockheight: UInt32?, 
+        /**
+         * True when this UTXO is currently reserved by an in-flight PSBT
+         * (e.g. a channel-open or fund-send that has not been broadcast or
+         * abandoned). Reserved UTXOs are not spendable and must be excluded
+         * from the wallet's spendable balance.
+         */reserved: Bool) {
         self.txid = txid
         self.output = output
         self.amountMsat = amountMsat
         self.status = status
         self.address = address
         self.blockheight = blockheight
+        self.reserved = reserved
     }
 }
 
@@ -2218,6 +2660,9 @@ extension FundOutput: Equatable, Hashable {
         if lhs.blockheight != rhs.blockheight {
             return false
         }
+        if lhs.reserved != rhs.reserved {
+            return false
+        }
         return true
     }
 
@@ -2228,6 +2673,7 @@ extension FundOutput: Equatable, Hashable {
         hasher.combine(status)
         hasher.combine(address)
         hasher.combine(blockheight)
+        hasher.combine(reserved)
     }
 }
 
@@ -2240,22 +2686,24 @@ public struct FfiConverterTypeFundOutput: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FundOutput {
         return
             try FundOutput(
-                txid: FfiConverterData.read(from: &buf), 
+                txid: FfiConverterString.read(from: &buf), 
                 output: FfiConverterUInt32.read(from: &buf), 
                 amountMsat: FfiConverterUInt64.read(from: &buf), 
                 status: FfiConverterTypeOutputStatus.read(from: &buf), 
                 address: FfiConverterOptionString.read(from: &buf), 
-                blockheight: FfiConverterOptionUInt32.read(from: &buf)
+                blockheight: FfiConverterOptionUInt32.read(from: &buf), 
+                reserved: FfiConverterBool.read(from: &buf)
         )
     }
 
     public static func write(_ value: FundOutput, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.txid, into: &buf)
+        FfiConverterString.write(value.txid, into: &buf)
         FfiConverterUInt32.write(value.output, into: &buf)
         FfiConverterUInt64.write(value.amountMsat, into: &buf)
         FfiConverterTypeOutputStatus.write(value.status, into: &buf)
         FfiConverterOptionString.write(value.address, into: &buf)
         FfiConverterOptionUInt32.write(value.blockheight, into: &buf)
+        FfiConverterBool.write(value.reserved, into: &buf)
     }
 }
 
@@ -2276,9 +2724,15 @@ public func FfiConverterTypeFundOutput_lower(_ value: FundOutput) -> RustBuffer 
 
 
 public struct GetInfoResponse {
-    public var id: Data
+    /**
+     * Node public key as lowercase hex (66 chars).
+     */
+    public var id: String
     public var alias: String?
-    public var color: Data
+    /**
+     * 3-byte RGB color as lowercase hex (6 chars).
+     */
+    public var color: String
     public var numPeers: UInt32
     public var numPendingChannels: UInt32
     public var numActiveChannels: UInt32
@@ -2291,7 +2745,13 @@ public struct GetInfoResponse {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: Data, alias: String?, color: Data, numPeers: UInt32, numPendingChannels: UInt32, numActiveChannels: UInt32, numInactiveChannels: UInt32, version: String, lightningDir: String, blockheight: UInt32, network: String, feesCollectedMsat: UInt64) {
+    public init(
+        /**
+         * Node public key as lowercase hex (66 chars).
+         */id: String, alias: String?, 
+        /**
+         * 3-byte RGB color as lowercase hex (6 chars).
+         */color: String, numPeers: UInt32, numPendingChannels: UInt32, numActiveChannels: UInt32, numInactiveChannels: UInt32, version: String, lightningDir: String, blockheight: UInt32, network: String, feesCollectedMsat: UInt64) {
         self.id = id
         self.alias = alias
         self.color = color
@@ -2378,9 +2838,9 @@ public struct FfiConverterTypeGetInfoResponse: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GetInfoResponse {
         return
             try GetInfoResponse(
-                id: FfiConverterData.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf), 
                 alias: FfiConverterOptionString.read(from: &buf), 
-                color: FfiConverterData.read(from: &buf), 
+                color: FfiConverterString.read(from: &buf), 
                 numPeers: FfiConverterUInt32.read(from: &buf), 
                 numPendingChannels: FfiConverterUInt32.read(from: &buf), 
                 numActiveChannels: FfiConverterUInt32.read(from: &buf), 
@@ -2394,9 +2854,9 @@ public struct FfiConverterTypeGetInfoResponse: FfiConverterRustBuffer {
     }
 
     public static func write(_ value: GetInfoResponse, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.id, into: &buf)
+        FfiConverterString.write(value.id, into: &buf)
         FfiConverterOptionString.write(value.alias, into: &buf)
-        FfiConverterData.write(value.color, into: &buf)
+        FfiConverterString.write(value.color, into: &buf)
         FfiConverterUInt32.write(value.numPeers, into: &buf)
         FfiConverterUInt32.write(value.numPendingChannels, into: &buf)
         FfiConverterUInt32.write(value.numActiveChannels, into: &buf)
@@ -2428,7 +2888,10 @@ public func FfiConverterTypeGetInfoResponse_lower(_ value: GetInfoResponse) -> R
 public struct Invoice {
     public var label: String
     public var description: String
-    public var paymentHash: Data
+    /**
+     * Payment hash as lowercase hex (64 chars).
+     */
+    public var paymentHash: String
     public var status: InvoiceStatus
     public var amountMsat: UInt64?
     public var amountReceivedMsat: UInt64?
@@ -2436,12 +2899,27 @@ public struct Invoice {
     public var bolt12: String?
     public var paidAt: UInt64?
     public var expiresAt: UInt64
-    public var paymentPreimage: Data?
-    public var destinationPubkey: Data?
+    /**
+     * Payment preimage as lowercase hex (64 chars), if the invoice has been paid.
+     */
+    public var paymentPreimage: String?
+    /**
+     * Recipient node pubkey as lowercase hex (66 chars), recovered from the bolt11.
+     */
+    public var destinationPubkey: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(label: String, description: String, paymentHash: Data, status: InvoiceStatus, amountMsat: UInt64?, amountReceivedMsat: UInt64?, bolt11: String?, bolt12: String?, paidAt: UInt64?, expiresAt: UInt64, paymentPreimage: Data?, destinationPubkey: Data?) {
+    public init(label: String, description: String, 
+        /**
+         * Payment hash as lowercase hex (64 chars).
+         */paymentHash: String, status: InvoiceStatus, amountMsat: UInt64?, amountReceivedMsat: UInt64?, bolt11: String?, bolt12: String?, paidAt: UInt64?, expiresAt: UInt64, 
+        /**
+         * Payment preimage as lowercase hex (64 chars), if the invoice has been paid.
+         */paymentPreimage: String?, 
+        /**
+         * Recipient node pubkey as lowercase hex (66 chars), recovered from the bolt11.
+         */destinationPubkey: String?) {
         self.label = label
         self.description = description
         self.paymentHash = paymentHash
@@ -2530,7 +3008,7 @@ public struct FfiConverterTypeInvoice: FfiConverterRustBuffer {
             try Invoice(
                 label: FfiConverterString.read(from: &buf), 
                 description: FfiConverterString.read(from: &buf), 
-                paymentHash: FfiConverterData.read(from: &buf), 
+                paymentHash: FfiConverterString.read(from: &buf), 
                 status: FfiConverterTypeInvoiceStatus.read(from: &buf), 
                 amountMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 amountReceivedMsat: FfiConverterOptionUInt64.read(from: &buf), 
@@ -2538,15 +3016,15 @@ public struct FfiConverterTypeInvoice: FfiConverterRustBuffer {
                 bolt12: FfiConverterOptionString.read(from: &buf), 
                 paidAt: FfiConverterOptionUInt64.read(from: &buf), 
                 expiresAt: FfiConverterUInt64.read(from: &buf), 
-                paymentPreimage: FfiConverterOptionData.read(from: &buf), 
-                destinationPubkey: FfiConverterOptionData.read(from: &buf)
+                paymentPreimage: FfiConverterOptionString.read(from: &buf), 
+                destinationPubkey: FfiConverterOptionString.read(from: &buf)
         )
     }
 
     public static func write(_ value: Invoice, into buf: inout [UInt8]) {
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterString.write(value.description, into: &buf)
-        FfiConverterData.write(value.paymentHash, into: &buf)
+        FfiConverterString.write(value.paymentHash, into: &buf)
         FfiConverterTypeInvoiceStatus.write(value.status, into: &buf)
         FfiConverterOptionUInt64.write(value.amountMsat, into: &buf)
         FfiConverterOptionUInt64.write(value.amountReceivedMsat, into: &buf)
@@ -2554,8 +3032,8 @@ public struct FfiConverterTypeInvoice: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.bolt12, into: &buf)
         FfiConverterOptionUInt64.write(value.paidAt, into: &buf)
         FfiConverterUInt64.write(value.expiresAt, into: &buf)
-        FfiConverterOptionData.write(value.paymentPreimage, into: &buf)
-        FfiConverterOptionData.write(value.destinationPubkey, into: &buf)
+        FfiConverterOptionString.write(value.paymentPreimage, into: &buf)
+        FfiConverterOptionString.write(value.destinationPubkey, into: &buf)
     }
 }
 
@@ -2580,17 +3058,17 @@ public func FfiConverterTypeInvoice_lower(_ value: Invoice) -> RustBuffer {
  */
 public struct InvoicePaidEvent {
     /**
-     * The payment hash of the paid invoice.
+     * Payment hash of the paid invoice as lowercase hex (64 chars).
      */
-    public var paymentHash: Data
+    public var paymentHash: String
     /**
      * The bolt11 invoice string.
      */
     public var bolt11: String
     /**
-     * The preimage that proves payment.
+     * Preimage that proves payment as lowercase hex (64 chars).
      */
-    public var preimage: Data
+    public var preimage: String
     /**
      * The label assigned to the invoice.
      */
@@ -2604,14 +3082,14 @@ public struct InvoicePaidEvent {
     // declare one manually.
     public init(
         /**
-         * The payment hash of the paid invoice.
-         */paymentHash: Data, 
+         * Payment hash of the paid invoice as lowercase hex (64 chars).
+         */paymentHash: String, 
         /**
          * The bolt11 invoice string.
          */bolt11: String, 
         /**
-         * The preimage that proves payment.
-         */preimage: Data, 
+         * Preimage that proves payment as lowercase hex (64 chars).
+         */preimage: String, 
         /**
          * The label assigned to the invoice.
          */label: String, 
@@ -2669,18 +3147,18 @@ public struct FfiConverterTypeInvoicePaidEvent: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InvoicePaidEvent {
         return
             try InvoicePaidEvent(
-                paymentHash: FfiConverterData.read(from: &buf), 
+                paymentHash: FfiConverterString.read(from: &buf), 
                 bolt11: FfiConverterString.read(from: &buf), 
-                preimage: FfiConverterData.read(from: &buf), 
+                preimage: FfiConverterString.read(from: &buf), 
                 label: FfiConverterString.read(from: &buf), 
                 amountMsat: FfiConverterUInt64.read(from: &buf)
         )
     }
 
     public static func write(_ value: InvoicePaidEvent, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.paymentHash, into: &buf)
+        FfiConverterString.write(value.paymentHash, into: &buf)
         FfiConverterString.write(value.bolt11, into: &buf)
-        FfiConverterData.write(value.preimage, into: &buf)
+        FfiConverterString.write(value.preimage, into: &buf)
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterUInt64.write(value.amountMsat, into: &buf)
     }
@@ -3159,6 +3637,1453 @@ public func FfiConverterTypeListPeersResponse_lower(_ value: ListPeersResponse) 
 
 
 /**
+ * Error returned by an LNURL service endpoint.
+ */
+public struct LnUrlErrorData {
+    public var reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(reason: String) {
+        self.reason = reason
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlErrorData: Sendable {}
+#endif
+
+
+extension LnUrlErrorData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlErrorData, rhs: LnUrlErrorData) -> Bool {
+        if lhs.reason != rhs.reason {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(reason)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlErrorData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlErrorData {
+        return
+            try LnUrlErrorData(
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlErrorData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlErrorData_lift(_ buf: RustBuffer) throws -> LnUrlErrorData {
+    return try FfiConverterTypeLnUrlErrorData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlErrorData_lower(_ value: LnUrlErrorData) -> RustBuffer {
+    return FfiConverterTypeLnUrlErrorData.lower(value)
+}
+
+
+/**
+ * Details of a failed LNURL-pay attempt on the pay phase.
+ */
+public struct LnUrlPayErrorData {
+    /**
+     * Hex-encoded payment hash of the invoice the service returned.
+     */
+    public var paymentHash: String
+    /**
+     * Human-readable reason the pay attempt failed.
+     */
+    public var reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Hex-encoded payment hash of the invoice the service returned.
+         */paymentHash: String, 
+        /**
+         * Human-readable reason the pay attempt failed.
+         */reason: String) {
+        self.paymentHash = paymentHash
+        self.reason = reason
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlPayErrorData: Sendable {}
+#endif
+
+
+extension LnUrlPayErrorData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlPayErrorData, rhs: LnUrlPayErrorData) -> Bool {
+        if lhs.paymentHash != rhs.paymentHash {
+            return false
+        }
+        if lhs.reason != rhs.reason {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(paymentHash)
+        hasher.combine(reason)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlPayErrorData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlPayErrorData {
+        return
+            try LnUrlPayErrorData(
+                paymentHash: FfiConverterString.read(from: &buf), 
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlPayErrorData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.paymentHash, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayErrorData_lift(_ buf: RustBuffer) throws -> LnUrlPayErrorData {
+    return try FfiConverterTypeLnUrlPayErrorData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayErrorData_lower(_ value: LnUrlPayErrorData) -> RustBuffer {
+    return FfiConverterTypeLnUrlPayErrorData.lower(value)
+}
+
+
+/**
+ * Request to execute an LNURL-pay flow.
+ *
+ * Combines the resolved service data with the user's chosen amount.
+ */
+public struct LnUrlPayRequest {
+    /**
+     * The resolved pay request data from `parse_input()`.
+     */
+    public var data: LnUrlPayRequestData
+    /**
+     * Amount to pay in millisatoshis.
+     */
+    public var amountMsat: UInt64
+    /**
+     * Optional comment to send with the payment.
+     */
+    public var comment: String?
+    /**
+     * When true (the default), a URL success action is rejected if its
+     * domain differs from the callback's domain.
+     *
+     * This is a wallet-side safety convention, not a LUD-09 requirement:
+     * LUD-09 does not mandate same-domain URLs, but a divergent domain
+     * can be used to phish users, so the SDK rejects it by default.
+     * Set to `Some(false)` only if you have a specific reason to trust
+     * cross-domain success-action URLs from this service.
+     */
+    public var validateSuccessActionUrl: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The resolved pay request data from `parse_input()`.
+         */data: LnUrlPayRequestData, 
+        /**
+         * Amount to pay in millisatoshis.
+         */amountMsat: UInt64, 
+        /**
+         * Optional comment to send with the payment.
+         */comment: String?, 
+        /**
+         * When true (the default), a URL success action is rejected if its
+         * domain differs from the callback's domain.
+         *
+         * This is a wallet-side safety convention, not a LUD-09 requirement:
+         * LUD-09 does not mandate same-domain URLs, but a divergent domain
+         * can be used to phish users, so the SDK rejects it by default.
+         * Set to `Some(false)` only if you have a specific reason to trust
+         * cross-domain success-action URLs from this service.
+         */validateSuccessActionUrl: Bool?) {
+        self.data = data
+        self.amountMsat = amountMsat
+        self.comment = comment
+        self.validateSuccessActionUrl = validateSuccessActionUrl
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlPayRequest: Sendable {}
+#endif
+
+
+extension LnUrlPayRequest: Equatable, Hashable {
+    public static func ==(lhs: LnUrlPayRequest, rhs: LnUrlPayRequest) -> Bool {
+        if lhs.data != rhs.data {
+            return false
+        }
+        if lhs.amountMsat != rhs.amountMsat {
+            return false
+        }
+        if lhs.comment != rhs.comment {
+            return false
+        }
+        if lhs.validateSuccessActionUrl != rhs.validateSuccessActionUrl {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(data)
+        hasher.combine(amountMsat)
+        hasher.combine(comment)
+        hasher.combine(validateSuccessActionUrl)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlPayRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlPayRequest {
+        return
+            try LnUrlPayRequest(
+                data: FfiConverterTypeLnUrlPayRequestData.read(from: &buf), 
+                amountMsat: FfiConverterUInt64.read(from: &buf), 
+                comment: FfiConverterOptionString.read(from: &buf), 
+                validateSuccessActionUrl: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlPayRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeLnUrlPayRequestData.write(value.data, into: &buf)
+        FfiConverterUInt64.write(value.amountMsat, into: &buf)
+        FfiConverterOptionString.write(value.comment, into: &buf)
+        FfiConverterOptionBool.write(value.validateSuccessActionUrl, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayRequest_lift(_ buf: RustBuffer) throws -> LnUrlPayRequest {
+    return try FfiConverterTypeLnUrlPayRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayRequest_lower(_ value: LnUrlPayRequest) -> RustBuffer {
+    return FfiConverterTypeLnUrlPayRequest.lower(value)
+}
+
+
+/**
+ * Data from an LNURL-pay endpoint (LUD-06).
+ *
+ * Contains the service's accepted amount range and metadata.
+ * Returned inside `InputType::LnUrlPay` after `parse_input` resolves
+ * an LNURL or Lightning Address.
+ */
+public struct LnUrlPayRequestData {
+    /**
+     * The callback URL to request an invoice from.
+     */
+    public var callback: String
+    /**
+     * Minimum amount the service accepts, in millisatoshis.
+     */
+    public var minSendable: UInt64
+    /**
+     * Maximum amount the service accepts, in millisatoshis.
+     */
+    public var maxSendable: UInt64
+    /**
+     * Raw metadata JSON string (array of `["mime", "content"]` pairs).
+     */
+    public var metadata: String
+    /**
+     * Maximum comment length the service accepts. 0 means no comments.
+     */
+    public var commentAllowed: UInt64
+    /**
+     * Human-readable description extracted from metadata.
+     */
+    public var description: String
+    /**
+     * The original LNURL or lightning address that was resolved.
+     */
+    public var lnurl: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The callback URL to request an invoice from.
+         */callback: String, 
+        /**
+         * Minimum amount the service accepts, in millisatoshis.
+         */minSendable: UInt64, 
+        /**
+         * Maximum amount the service accepts, in millisatoshis.
+         */maxSendable: UInt64, 
+        /**
+         * Raw metadata JSON string (array of `["mime", "content"]` pairs).
+         */metadata: String, 
+        /**
+         * Maximum comment length the service accepts. 0 means no comments.
+         */commentAllowed: UInt64, 
+        /**
+         * Human-readable description extracted from metadata.
+         */description: String, 
+        /**
+         * The original LNURL or lightning address that was resolved.
+         */lnurl: String) {
+        self.callback = callback
+        self.minSendable = minSendable
+        self.maxSendable = maxSendable
+        self.metadata = metadata
+        self.commentAllowed = commentAllowed
+        self.description = description
+        self.lnurl = lnurl
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlPayRequestData: Sendable {}
+#endif
+
+
+extension LnUrlPayRequestData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlPayRequestData, rhs: LnUrlPayRequestData) -> Bool {
+        if lhs.callback != rhs.callback {
+            return false
+        }
+        if lhs.minSendable != rhs.minSendable {
+            return false
+        }
+        if lhs.maxSendable != rhs.maxSendable {
+            return false
+        }
+        if lhs.metadata != rhs.metadata {
+            return false
+        }
+        if lhs.commentAllowed != rhs.commentAllowed {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        if lhs.lnurl != rhs.lnurl {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(callback)
+        hasher.combine(minSendable)
+        hasher.combine(maxSendable)
+        hasher.combine(metadata)
+        hasher.combine(commentAllowed)
+        hasher.combine(description)
+        hasher.combine(lnurl)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlPayRequestData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlPayRequestData {
+        return
+            try LnUrlPayRequestData(
+                callback: FfiConverterString.read(from: &buf), 
+                minSendable: FfiConverterUInt64.read(from: &buf), 
+                maxSendable: FfiConverterUInt64.read(from: &buf), 
+                metadata: FfiConverterString.read(from: &buf), 
+                commentAllowed: FfiConverterUInt64.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                lnurl: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlPayRequestData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.callback, into: &buf)
+        FfiConverterUInt64.write(value.minSendable, into: &buf)
+        FfiConverterUInt64.write(value.maxSendable, into: &buf)
+        FfiConverterString.write(value.metadata, into: &buf)
+        FfiConverterUInt64.write(value.commentAllowed, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.lnurl, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayRequestData_lift(_ buf: RustBuffer) throws -> LnUrlPayRequestData {
+    return try FfiConverterTypeLnUrlPayRequestData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayRequestData_lower(_ value: LnUrlPayRequestData) -> RustBuffer {
+    return FfiConverterTypeLnUrlPayRequestData.lower(value)
+}
+
+
+/**
+ * Successful LNURL-pay result data.
+ */
+public struct LnUrlPaySuccessData {
+    /**
+     * The payment preimage (proof of payment), hex-encoded.
+     */
+    public var paymentPreimage: String
+    /**
+     * Optional success action from the service (LUD-09).
+     */
+    public var successAction: SuccessActionProcessed?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The payment preimage (proof of payment), hex-encoded.
+         */paymentPreimage: String, 
+        /**
+         * Optional success action from the service (LUD-09).
+         */successAction: SuccessActionProcessed?) {
+        self.paymentPreimage = paymentPreimage
+        self.successAction = successAction
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlPaySuccessData: Sendable {}
+#endif
+
+
+extension LnUrlPaySuccessData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlPaySuccessData, rhs: LnUrlPaySuccessData) -> Bool {
+        if lhs.paymentPreimage != rhs.paymentPreimage {
+            return false
+        }
+        if lhs.successAction != rhs.successAction {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(paymentPreimage)
+        hasher.combine(successAction)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlPaySuccessData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlPaySuccessData {
+        return
+            try LnUrlPaySuccessData(
+                paymentPreimage: FfiConverterString.read(from: &buf), 
+                successAction: FfiConverterOptionTypeSuccessActionProcessed.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlPaySuccessData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.paymentPreimage, into: &buf)
+        FfiConverterOptionTypeSuccessActionProcessed.write(value.successAction, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPaySuccessData_lift(_ buf: RustBuffer) throws -> LnUrlPaySuccessData {
+    return try FfiConverterTypeLnUrlPaySuccessData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPaySuccessData_lower(_ value: LnUrlPaySuccessData) -> RustBuffer {
+    return FfiConverterTypeLnUrlPaySuccessData.lower(value)
+}
+
+
+/**
+ * Request to execute an LNURL-withdraw flow.
+ *
+ * Combines the resolved service data with the user's chosen amount.
+ */
+public struct LnUrlWithdrawRequest {
+    /**
+     * The resolved withdraw request data from `parse_input()`.
+     */
+    public var data: LnUrlWithdrawRequestData
+    /**
+     * Amount to withdraw in millisatoshis.
+     */
+    public var amountMsat: UInt64
+    /**
+     * Optional description for the invoice (overrides default).
+     */
+    public var description: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The resolved withdraw request data from `parse_input()`.
+         */data: LnUrlWithdrawRequestData, 
+        /**
+         * Amount to withdraw in millisatoshis.
+         */amountMsat: UInt64, 
+        /**
+         * Optional description for the invoice (overrides default).
+         */description: String?) {
+        self.data = data
+        self.amountMsat = amountMsat
+        self.description = description
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlWithdrawRequest: Sendable {}
+#endif
+
+
+extension LnUrlWithdrawRequest: Equatable, Hashable {
+    public static func ==(lhs: LnUrlWithdrawRequest, rhs: LnUrlWithdrawRequest) -> Bool {
+        if lhs.data != rhs.data {
+            return false
+        }
+        if lhs.amountMsat != rhs.amountMsat {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(data)
+        hasher.combine(amountMsat)
+        hasher.combine(description)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlWithdrawRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlWithdrawRequest {
+        return
+            try LnUrlWithdrawRequest(
+                data: FfiConverterTypeLnUrlWithdrawRequestData.read(from: &buf), 
+                amountMsat: FfiConverterUInt64.read(from: &buf), 
+                description: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlWithdrawRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeLnUrlWithdrawRequestData.write(value.data, into: &buf)
+        FfiConverterUInt64.write(value.amountMsat, into: &buf)
+        FfiConverterOptionString.write(value.description, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawRequest_lift(_ buf: RustBuffer) throws -> LnUrlWithdrawRequest {
+    return try FfiConverterTypeLnUrlWithdrawRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawRequest_lower(_ value: LnUrlWithdrawRequest) -> RustBuffer {
+    return FfiConverterTypeLnUrlWithdrawRequest.lower(value)
+}
+
+
+/**
+ * Data from an LNURL-withdraw endpoint (LUD-03).
+ *
+ * Contains the service's accepted withdrawal range and session key.
+ * Returned inside `InputType::LnUrlWithdraw` after `parse_input`
+ * resolves an LNURL.
+ */
+public struct LnUrlWithdrawRequestData {
+    /**
+     * The callback URL to submit the invoice to.
+     */
+    public var callback: String
+    /**
+     * Ephemeral secret linking this wallet session to the service.
+     */
+    public var k1: String
+    /**
+     * Default description for the invoice.
+     */
+    public var defaultDescription: String
+    /**
+     * Minimum withdrawable amount in millisatoshis.
+     */
+    public var minWithdrawable: UInt64
+    /**
+     * Maximum withdrawable amount in millisatoshis.
+     */
+    public var maxWithdrawable: UInt64
+    /**
+     * The original LNURL that was resolved.
+     */
+    public var lnurl: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The callback URL to submit the invoice to.
+         */callback: String, 
+        /**
+         * Ephemeral secret linking this wallet session to the service.
+         */k1: String, 
+        /**
+         * Default description for the invoice.
+         */defaultDescription: String, 
+        /**
+         * Minimum withdrawable amount in millisatoshis.
+         */minWithdrawable: UInt64, 
+        /**
+         * Maximum withdrawable amount in millisatoshis.
+         */maxWithdrawable: UInt64, 
+        /**
+         * The original LNURL that was resolved.
+         */lnurl: String) {
+        self.callback = callback
+        self.k1 = k1
+        self.defaultDescription = defaultDescription
+        self.minWithdrawable = minWithdrawable
+        self.maxWithdrawable = maxWithdrawable
+        self.lnurl = lnurl
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlWithdrawRequestData: Sendable {}
+#endif
+
+
+extension LnUrlWithdrawRequestData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlWithdrawRequestData, rhs: LnUrlWithdrawRequestData) -> Bool {
+        if lhs.callback != rhs.callback {
+            return false
+        }
+        if lhs.k1 != rhs.k1 {
+            return false
+        }
+        if lhs.defaultDescription != rhs.defaultDescription {
+            return false
+        }
+        if lhs.minWithdrawable != rhs.minWithdrawable {
+            return false
+        }
+        if lhs.maxWithdrawable != rhs.maxWithdrawable {
+            return false
+        }
+        if lhs.lnurl != rhs.lnurl {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(callback)
+        hasher.combine(k1)
+        hasher.combine(defaultDescription)
+        hasher.combine(minWithdrawable)
+        hasher.combine(maxWithdrawable)
+        hasher.combine(lnurl)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlWithdrawRequestData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlWithdrawRequestData {
+        return
+            try LnUrlWithdrawRequestData(
+                callback: FfiConverterString.read(from: &buf), 
+                k1: FfiConverterString.read(from: &buf), 
+                defaultDescription: FfiConverterString.read(from: &buf), 
+                minWithdrawable: FfiConverterUInt64.read(from: &buf), 
+                maxWithdrawable: FfiConverterUInt64.read(from: &buf), 
+                lnurl: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlWithdrawRequestData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.callback, into: &buf)
+        FfiConverterString.write(value.k1, into: &buf)
+        FfiConverterString.write(value.defaultDescription, into: &buf)
+        FfiConverterUInt64.write(value.minWithdrawable, into: &buf)
+        FfiConverterUInt64.write(value.maxWithdrawable, into: &buf)
+        FfiConverterString.write(value.lnurl, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawRequestData_lift(_ buf: RustBuffer) throws -> LnUrlWithdrawRequestData {
+    return try FfiConverterTypeLnUrlWithdrawRequestData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawRequestData_lower(_ value: LnUrlWithdrawRequestData) -> RustBuffer {
+    return FfiConverterTypeLnUrlWithdrawRequestData.lower(value)
+}
+
+
+/**
+ * Successful LNURL-withdraw result data.
+ */
+public struct LnUrlWithdrawSuccessData {
+    /**
+     * The BOLT11 invoice that was submitted for withdrawal.
+     */
+    public var invoice: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The BOLT11 invoice that was submitted for withdrawal.
+         */invoice: String) {
+        self.invoice = invoice
+    }
+}
+
+#if compiler(>=6)
+extension LnUrlWithdrawSuccessData: Sendable {}
+#endif
+
+
+extension LnUrlWithdrawSuccessData: Equatable, Hashable {
+    public static func ==(lhs: LnUrlWithdrawSuccessData, rhs: LnUrlWithdrawSuccessData) -> Bool {
+        if lhs.invoice != rhs.invoice {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(invoice)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlWithdrawSuccessData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlWithdrawSuccessData {
+        return
+            try LnUrlWithdrawSuccessData(
+                invoice: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LnUrlWithdrawSuccessData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.invoice, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawSuccessData_lift(_ buf: RustBuffer) throws -> LnUrlWithdrawSuccessData {
+    return try FfiConverterTypeLnUrlWithdrawSuccessData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawSuccessData_lower(_ value: LnUrlWithdrawSuccessData) -> RustBuffer {
+    return FfiConverterTypeLnUrlWithdrawSuccessData.lower(value)
+}
+
+
+/**
+ * A single log message from the SDK.
+ */
+public struct LogEntry {
+    public var level: LogLevel
+    public var message: String
+    /**
+     * The module that produced this log (e.g. "gl_client::scheduler").
+     */
+    public var target: String
+    /**
+     * Source file path, if the log macro recorded one.
+     */
+    public var file: String?
+    /**
+     * Source line number, if the log macro recorded one.
+     */
+    public var line: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(level: LogLevel, message: String, 
+        /**
+         * The module that produced this log (e.g. "gl_client::scheduler").
+         */target: String, 
+        /**
+         * Source file path, if the log macro recorded one.
+         */file: String?, 
+        /**
+         * Source line number, if the log macro recorded one.
+         */line: UInt32?) {
+        self.level = level
+        self.message = message
+        self.target = target
+        self.file = file
+        self.line = line
+    }
+}
+
+#if compiler(>=6)
+extension LogEntry: Sendable {}
+#endif
+
+
+extension LogEntry: Equatable, Hashable {
+    public static func ==(lhs: LogEntry, rhs: LogEntry) -> Bool {
+        if lhs.level != rhs.level {
+            return false
+        }
+        if lhs.message != rhs.message {
+            return false
+        }
+        if lhs.target != rhs.target {
+            return false
+        }
+        if lhs.file != rhs.file {
+            return false
+        }
+        if lhs.line != rhs.line {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(level)
+        hasher.combine(message)
+        hasher.combine(target)
+        hasher.combine(file)
+        hasher.combine(line)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLogEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LogEntry {
+        return
+            try LogEntry(
+                level: FfiConverterTypeLogLevel.read(from: &buf), 
+                message: FfiConverterString.read(from: &buf), 
+                target: FfiConverterString.read(from: &buf), 
+                file: FfiConverterOptionString.read(from: &buf), 
+                line: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LogEntry, into buf: inout [UInt8]) {
+        FfiConverterTypeLogLevel.write(value.level, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterString.write(value.target, into: &buf)
+        FfiConverterOptionString.write(value.file, into: &buf)
+        FfiConverterOptionUInt32.write(value.line, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogEntry_lift(_ buf: RustBuffer) throws -> LogEntry {
+    return try FfiConverterTypeLogEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogEntry_lower(_ value: LogEntry) -> RustBuffer {
+    return FfiConverterTypeLogEntry.lower(value)
+}
+
+
+/**
+ * A point-in-time snapshot of the node's balances, capacity, and
+ * connectivity. Returned by `node_state()`.
+ *
+ * All amounts are in millisatoshis (1 sat = 1000 msat).
+ */
+public struct NodeState {
+    /**
+     * The node's public key as a lowercase hex string (66 chars).
+     */
+    public var id: String
+    /**
+     * Latest block height the node has synced to.
+     */
+    public var blockHeight: UInt32
+    /**
+     * The Bitcoin network this node is running on (e.g. "bitcoin", "regtest").
+     */
+    public var network: String
+    /**
+     * CLN version string (e.g. "v24.11").
+     */
+    public var version: String
+    /**
+     * Human-readable node alias, if set.
+     */
+    public var alias: String?
+    /**
+     * 3-byte RGB color of the node, as a lowercase hex string (6 chars).
+     */
+    public var color: String
+    /**
+     * Number of channels that are open and operational. These are the
+     * channels that contribute to `channels_balance_msat`,
+     * `max_payable_msat`, `total_channel_capacity_msat`, and
+     * `total_inbound_liquidity_msat`.
+     */
+    public var numActiveChannels: UInt32
+    /**
+     * Number of channels that are being opened but not yet confirmed.
+     * Pending channels do not contribute to any balance or capacity
+     * field on this snapshot; their funds show up only after they
+     * transition to active.
+     */
+    public var numPendingChannels: UInt32
+    /**
+     * Number of channels that are open but the peer is offline.
+     * Inactive channels hold balance but cannot be used for payments
+     * until the peer reconnects; they do not contribute to
+     * `max_payable_msat` or `total_inbound_liquidity_msat` (those are
+     * computed from the live `spendable_msat` / `receivable_msat`
+     * reported by CLN, which goes to zero when the peer is offline).
+     */
+    public var numInactiveChannels: UInt32
+    /**
+     * Total our-side balance across all open channels, including amounts
+     * that protocol reserves make unspendable.
+     *
+     * This is the field a wallet's home screen should show as the
+     * user's "Lightning balance" — it reflects what they own off-chain,
+     * matching what they'd expect to see at a glance.
+     *
+     * Do **not** use this to gate a send button: some of it is locked
+     * in channel reserves. Use `max_payable_msat` for that.
+     */
+    public var channelsBalanceMsat: UInt64
+    /**
+     * Aggregate spendable amount across all open channels. Equal to
+     * `channels_balance_msat - max_chan_reserve_msat`.
+     *
+     * This is the field a send screen should gate against — it is what
+     * the user can actually move right now over Lightning in total.
+     *
+     * Caveat: a single Lightning payment is additionally bounded by
+     * the largest channel's own `spendable_msat`. Reaching this full
+     * aggregate amount in one payment requires multi-path-payment
+     * support from the recipient and a working route.
+     */
+    public var maxPayableMsat: UInt64
+    /**
+     * Sum of all open channel capacities (your side + remote side).
+     */
+    public var totalChannelCapacityMsat: UInt64
+    /**
+     * Amount locked in protocol channel reserves, computed as
+     * `channels_balance_msat - max_payable_msat`. These sats are yours
+     * on paper but cannot be spent until the channel closes.
+     */
+    public var maxChanReserveMsat: UInt64
+    /**
+     * Confirmed on-chain balance available for spending or opening channels.
+     */
+    public var onchainBalanceMsat: UInt64
+    /**
+     * On-chain balance from transactions that have not yet been confirmed.
+     */
+    public var unconfirmedOnchainBalanceMsat: UInt64
+    /**
+     * On-chain balance confirmed but not yet spendable (e.g. coinbase
+     * outputs inside the 100-block maturation window).
+     */
+    public var immatureOnchainBalanceMsat: UInt64
+    /**
+     * On-chain balance locked in channels that are being closed.
+     * These funds will become available once the close is confirmed.
+     */
+    public var pendingOnchainBalanceMsat: UInt64
+    /**
+     * Largest single Lightning payment the node can receive without
+     * splitting across channels. Bounded by the inbound capacity of
+     * the largest open channel.
+     */
+    public var maxReceivableSinglePaymentMsat: UInt64
+    /**
+     * Total amount you can receive across all open channels combined.
+     */
+    public var totalInboundLiquidityMsat: UInt64
+    /**
+     * Lowercase hex public keys of peers we have at least one channel
+     * with and are currently connected to. Peers we're connected to but
+     * have no channel with are not represented here; for routing-node
+     * use cases, query `list_peers()` directly.
+     */
+    public var connectedChannelPeers: [String]
+    /**
+     * Unspent on-chain outputs owned by the node's wallet. Excludes
+     * spent outputs; includes confirmed, unconfirmed, immature, and
+     * reserved UTXOs (callers can filter by `status` and `reserved`).
+     */
+    public var utxos: [FundOutput]
+    /**
+     * All non-pending on-chain balance buckets summed:
+     * `onchain_balance_msat + unconfirmed_onchain_balance_msat + immature_onchain_balance_msat`.
+     * Excludes funds locked in closing channels (`pending_onchain_balance_msat`)
+     * since those are not yet on-chain UTXOs.
+     */
+    public var totalOnchainMsat: UInt64
+    /**
+     * Everything the user owns, summed: channel balance (including
+     * protocol reserves) + all on-chain buckets + funds locked in
+     * closing channels. The "total holdings" number a wallet home
+     * screen typically shows.
+     */
+    public var totalBalanceMsat: UInt64
+    /**
+     * What the user can spend *right now*:
+     * `max_payable_msat + onchain_balance_msat`. Excludes reserves,
+     * unconfirmed, immature, and pending amounts. The number a
+     * send-money screen should gate against.
+     */
+    public var spendableBalanceMsat: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The node's public key as a lowercase hex string (66 chars).
+         */id: String, 
+        /**
+         * Latest block height the node has synced to.
+         */blockHeight: UInt32, 
+        /**
+         * The Bitcoin network this node is running on (e.g. "bitcoin", "regtest").
+         */network: String, 
+        /**
+         * CLN version string (e.g. "v24.11").
+         */version: String, 
+        /**
+         * Human-readable node alias, if set.
+         */alias: String?, 
+        /**
+         * 3-byte RGB color of the node, as a lowercase hex string (6 chars).
+         */color: String, 
+        /**
+         * Number of channels that are open and operational. These are the
+         * channels that contribute to `channels_balance_msat`,
+         * `max_payable_msat`, `total_channel_capacity_msat`, and
+         * `total_inbound_liquidity_msat`.
+         */numActiveChannels: UInt32, 
+        /**
+         * Number of channels that are being opened but not yet confirmed.
+         * Pending channels do not contribute to any balance or capacity
+         * field on this snapshot; their funds show up only after they
+         * transition to active.
+         */numPendingChannels: UInt32, 
+        /**
+         * Number of channels that are open but the peer is offline.
+         * Inactive channels hold balance but cannot be used for payments
+         * until the peer reconnects; they do not contribute to
+         * `max_payable_msat` or `total_inbound_liquidity_msat` (those are
+         * computed from the live `spendable_msat` / `receivable_msat`
+         * reported by CLN, which goes to zero when the peer is offline).
+         */numInactiveChannels: UInt32, 
+        /**
+         * Total our-side balance across all open channels, including amounts
+         * that protocol reserves make unspendable.
+         *
+         * This is the field a wallet's home screen should show as the
+         * user's "Lightning balance" — it reflects what they own off-chain,
+         * matching what they'd expect to see at a glance.
+         *
+         * Do **not** use this to gate a send button: some of it is locked
+         * in channel reserves. Use `max_payable_msat` for that.
+         */channelsBalanceMsat: UInt64, 
+        /**
+         * Aggregate spendable amount across all open channels. Equal to
+         * `channels_balance_msat - max_chan_reserve_msat`.
+         *
+         * This is the field a send screen should gate against — it is what
+         * the user can actually move right now over Lightning in total.
+         *
+         * Caveat: a single Lightning payment is additionally bounded by
+         * the largest channel's own `spendable_msat`. Reaching this full
+         * aggregate amount in one payment requires multi-path-payment
+         * support from the recipient and a working route.
+         */maxPayableMsat: UInt64, 
+        /**
+         * Sum of all open channel capacities (your side + remote side).
+         */totalChannelCapacityMsat: UInt64, 
+        /**
+         * Amount locked in protocol channel reserves, computed as
+         * `channels_balance_msat - max_payable_msat`. These sats are yours
+         * on paper but cannot be spent until the channel closes.
+         */maxChanReserveMsat: UInt64, 
+        /**
+         * Confirmed on-chain balance available for spending or opening channels.
+         */onchainBalanceMsat: UInt64, 
+        /**
+         * On-chain balance from transactions that have not yet been confirmed.
+         */unconfirmedOnchainBalanceMsat: UInt64, 
+        /**
+         * On-chain balance confirmed but not yet spendable (e.g. coinbase
+         * outputs inside the 100-block maturation window).
+         */immatureOnchainBalanceMsat: UInt64, 
+        /**
+         * On-chain balance locked in channels that are being closed.
+         * These funds will become available once the close is confirmed.
+         */pendingOnchainBalanceMsat: UInt64, 
+        /**
+         * Largest single Lightning payment the node can receive without
+         * splitting across channels. Bounded by the inbound capacity of
+         * the largest open channel.
+         */maxReceivableSinglePaymentMsat: UInt64, 
+        /**
+         * Total amount you can receive across all open channels combined.
+         */totalInboundLiquidityMsat: UInt64, 
+        /**
+         * Lowercase hex public keys of peers we have at least one channel
+         * with and are currently connected to. Peers we're connected to but
+         * have no channel with are not represented here; for routing-node
+         * use cases, query `list_peers()` directly.
+         */connectedChannelPeers: [String], 
+        /**
+         * Unspent on-chain outputs owned by the node's wallet. Excludes
+         * spent outputs; includes confirmed, unconfirmed, immature, and
+         * reserved UTXOs (callers can filter by `status` and `reserved`).
+         */utxos: [FundOutput], 
+        /**
+         * All non-pending on-chain balance buckets summed:
+         * `onchain_balance_msat + unconfirmed_onchain_balance_msat + immature_onchain_balance_msat`.
+         * Excludes funds locked in closing channels (`pending_onchain_balance_msat`)
+         * since those are not yet on-chain UTXOs.
+         */totalOnchainMsat: UInt64, 
+        /**
+         * Everything the user owns, summed: channel balance (including
+         * protocol reserves) + all on-chain buckets + funds locked in
+         * closing channels. The "total holdings" number a wallet home
+         * screen typically shows.
+         */totalBalanceMsat: UInt64, 
+        /**
+         * What the user can spend *right now*:
+         * `max_payable_msat + onchain_balance_msat`. Excludes reserves,
+         * unconfirmed, immature, and pending amounts. The number a
+         * send-money screen should gate against.
+         */spendableBalanceMsat: UInt64) {
+        self.id = id
+        self.blockHeight = blockHeight
+        self.network = network
+        self.version = version
+        self.alias = alias
+        self.color = color
+        self.numActiveChannels = numActiveChannels
+        self.numPendingChannels = numPendingChannels
+        self.numInactiveChannels = numInactiveChannels
+        self.channelsBalanceMsat = channelsBalanceMsat
+        self.maxPayableMsat = maxPayableMsat
+        self.totalChannelCapacityMsat = totalChannelCapacityMsat
+        self.maxChanReserveMsat = maxChanReserveMsat
+        self.onchainBalanceMsat = onchainBalanceMsat
+        self.unconfirmedOnchainBalanceMsat = unconfirmedOnchainBalanceMsat
+        self.immatureOnchainBalanceMsat = immatureOnchainBalanceMsat
+        self.pendingOnchainBalanceMsat = pendingOnchainBalanceMsat
+        self.maxReceivableSinglePaymentMsat = maxReceivableSinglePaymentMsat
+        self.totalInboundLiquidityMsat = totalInboundLiquidityMsat
+        self.connectedChannelPeers = connectedChannelPeers
+        self.utxos = utxos
+        self.totalOnchainMsat = totalOnchainMsat
+        self.totalBalanceMsat = totalBalanceMsat
+        self.spendableBalanceMsat = spendableBalanceMsat
+    }
+}
+
+#if compiler(>=6)
+extension NodeState: Sendable {}
+#endif
+
+
+extension NodeState: Equatable, Hashable {
+    public static func ==(lhs: NodeState, rhs: NodeState) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.blockHeight != rhs.blockHeight {
+            return false
+        }
+        if lhs.network != rhs.network {
+            return false
+        }
+        if lhs.version != rhs.version {
+            return false
+        }
+        if lhs.alias != rhs.alias {
+            return false
+        }
+        if lhs.color != rhs.color {
+            return false
+        }
+        if lhs.numActiveChannels != rhs.numActiveChannels {
+            return false
+        }
+        if lhs.numPendingChannels != rhs.numPendingChannels {
+            return false
+        }
+        if lhs.numInactiveChannels != rhs.numInactiveChannels {
+            return false
+        }
+        if lhs.channelsBalanceMsat != rhs.channelsBalanceMsat {
+            return false
+        }
+        if lhs.maxPayableMsat != rhs.maxPayableMsat {
+            return false
+        }
+        if lhs.totalChannelCapacityMsat != rhs.totalChannelCapacityMsat {
+            return false
+        }
+        if lhs.maxChanReserveMsat != rhs.maxChanReserveMsat {
+            return false
+        }
+        if lhs.onchainBalanceMsat != rhs.onchainBalanceMsat {
+            return false
+        }
+        if lhs.unconfirmedOnchainBalanceMsat != rhs.unconfirmedOnchainBalanceMsat {
+            return false
+        }
+        if lhs.immatureOnchainBalanceMsat != rhs.immatureOnchainBalanceMsat {
+            return false
+        }
+        if lhs.pendingOnchainBalanceMsat != rhs.pendingOnchainBalanceMsat {
+            return false
+        }
+        if lhs.maxReceivableSinglePaymentMsat != rhs.maxReceivableSinglePaymentMsat {
+            return false
+        }
+        if lhs.totalInboundLiquidityMsat != rhs.totalInboundLiquidityMsat {
+            return false
+        }
+        if lhs.connectedChannelPeers != rhs.connectedChannelPeers {
+            return false
+        }
+        if lhs.utxos != rhs.utxos {
+            return false
+        }
+        if lhs.totalOnchainMsat != rhs.totalOnchainMsat {
+            return false
+        }
+        if lhs.totalBalanceMsat != rhs.totalBalanceMsat {
+            return false
+        }
+        if lhs.spendableBalanceMsat != rhs.spendableBalanceMsat {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(blockHeight)
+        hasher.combine(network)
+        hasher.combine(version)
+        hasher.combine(alias)
+        hasher.combine(color)
+        hasher.combine(numActiveChannels)
+        hasher.combine(numPendingChannels)
+        hasher.combine(numInactiveChannels)
+        hasher.combine(channelsBalanceMsat)
+        hasher.combine(maxPayableMsat)
+        hasher.combine(totalChannelCapacityMsat)
+        hasher.combine(maxChanReserveMsat)
+        hasher.combine(onchainBalanceMsat)
+        hasher.combine(unconfirmedOnchainBalanceMsat)
+        hasher.combine(immatureOnchainBalanceMsat)
+        hasher.combine(pendingOnchainBalanceMsat)
+        hasher.combine(maxReceivableSinglePaymentMsat)
+        hasher.combine(totalInboundLiquidityMsat)
+        hasher.combine(connectedChannelPeers)
+        hasher.combine(utxos)
+        hasher.combine(totalOnchainMsat)
+        hasher.combine(totalBalanceMsat)
+        hasher.combine(spendableBalanceMsat)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNodeState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NodeState {
+        return
+            try NodeState(
+                id: FfiConverterString.read(from: &buf), 
+                blockHeight: FfiConverterUInt32.read(from: &buf), 
+                network: FfiConverterString.read(from: &buf), 
+                version: FfiConverterString.read(from: &buf), 
+                alias: FfiConverterOptionString.read(from: &buf), 
+                color: FfiConverterString.read(from: &buf), 
+                numActiveChannels: FfiConverterUInt32.read(from: &buf), 
+                numPendingChannels: FfiConverterUInt32.read(from: &buf), 
+                numInactiveChannels: FfiConverterUInt32.read(from: &buf), 
+                channelsBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                maxPayableMsat: FfiConverterUInt64.read(from: &buf), 
+                totalChannelCapacityMsat: FfiConverterUInt64.read(from: &buf), 
+                maxChanReserveMsat: FfiConverterUInt64.read(from: &buf), 
+                onchainBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                unconfirmedOnchainBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                immatureOnchainBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                pendingOnchainBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                maxReceivableSinglePaymentMsat: FfiConverterUInt64.read(from: &buf), 
+                totalInboundLiquidityMsat: FfiConverterUInt64.read(from: &buf), 
+                connectedChannelPeers: FfiConverterSequenceString.read(from: &buf), 
+                utxos: FfiConverterSequenceTypeFundOutput.read(from: &buf), 
+                totalOnchainMsat: FfiConverterUInt64.read(from: &buf), 
+                totalBalanceMsat: FfiConverterUInt64.read(from: &buf), 
+                spendableBalanceMsat: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NodeState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterUInt32.write(value.blockHeight, into: &buf)
+        FfiConverterString.write(value.network, into: &buf)
+        FfiConverterString.write(value.version, into: &buf)
+        FfiConverterOptionString.write(value.alias, into: &buf)
+        FfiConverterString.write(value.color, into: &buf)
+        FfiConverterUInt32.write(value.numActiveChannels, into: &buf)
+        FfiConverterUInt32.write(value.numPendingChannels, into: &buf)
+        FfiConverterUInt32.write(value.numInactiveChannels, into: &buf)
+        FfiConverterUInt64.write(value.channelsBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.maxPayableMsat, into: &buf)
+        FfiConverterUInt64.write(value.totalChannelCapacityMsat, into: &buf)
+        FfiConverterUInt64.write(value.maxChanReserveMsat, into: &buf)
+        FfiConverterUInt64.write(value.onchainBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.unconfirmedOnchainBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.immatureOnchainBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.pendingOnchainBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.maxReceivableSinglePaymentMsat, into: &buf)
+        FfiConverterUInt64.write(value.totalInboundLiquidityMsat, into: &buf)
+        FfiConverterSequenceString.write(value.connectedChannelPeers, into: &buf)
+        FfiConverterSequenceTypeFundOutput.write(value.utxos, into: &buf)
+        FfiConverterUInt64.write(value.totalOnchainMsat, into: &buf)
+        FfiConverterUInt64.write(value.totalBalanceMsat, into: &buf)
+        FfiConverterUInt64.write(value.spendableBalanceMsat, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeState_lift(_ buf: RustBuffer) throws -> NodeState {
+    return try FfiConverterTypeNodeState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNodeState_lower(_ value: NodeState) -> RustBuffer {
+    return FfiConverterTypeNodeState.lower(value)
+}
+
+
+/**
  * A pair of on-chain addresses for receiving funds.
  */
 public struct OnchainReceiveResponse {
@@ -3252,9 +5177,9 @@ public struct OnchainSendResponse {
      */
     public var tx: Data
     /**
-     * The transaction ID (32 bytes, reversed byte order as is standard).
+     * The transaction id as lowercase hex (64 chars).
      */
-    public var txid: Data
+    public var txid: String
     /**
      * The transaction as a Partially Signed Bitcoin Transaction string.
      */
@@ -3267,8 +5192,8 @@ public struct OnchainSendResponse {
          * The raw signed transaction bytes.
          */tx: Data, 
         /**
-         * The transaction ID (32 bytes, reversed byte order as is standard).
-         */txid: Data, 
+         * The transaction id as lowercase hex (64 chars).
+         */txid: String, 
         /**
          * The transaction as a Partially Signed Bitcoin Transaction string.
          */psbt: String) {
@@ -3314,14 +5239,14 @@ public struct FfiConverterTypeOnchainSendResponse: FfiConverterRustBuffer {
         return
             try OnchainSendResponse(
                 tx: FfiConverterData.read(from: &buf), 
-                txid: FfiConverterData.read(from: &buf), 
+                txid: FfiConverterString.read(from: &buf), 
                 psbt: FfiConverterString.read(from: &buf)
         )
     }
 
     public static func write(_ value: OnchainSendResponse, into buf: inout [UInt8]) {
         FfiConverterData.write(value.tx, into: &buf)
-        FfiConverterData.write(value.txid, into: &buf)
+        FfiConverterString.write(value.txid, into: &buf)
         FfiConverterString.write(value.psbt, into: &buf)
     }
 }
@@ -3351,13 +5276,13 @@ public struct ParsedInvoice {
      */
     public var bolt11: String
     /**
-     * 33-byte recipient public key, recovered from the invoice signature.
+     * Recipient public key as lowercase hex (66 chars), recovered from the invoice signature.
      */
-    public var payeePubkey: Data?
+    public var payeePubkey: String?
     /**
-     * 32-byte payment hash identifying this payment.
+     * Payment hash as lowercase hex (64 chars) identifying this payment.
      */
-    public var paymentHash: Data
+    public var paymentHash: String
     /**
      * Invoice description. None if the invoice uses a description hash.
      */
@@ -3382,11 +5307,11 @@ public struct ParsedInvoice {
          * The original invoice string.
          */bolt11: String, 
         /**
-         * 33-byte recipient public key, recovered from the invoice signature.
-         */payeePubkey: Data?, 
+         * Recipient public key as lowercase hex (66 chars), recovered from the invoice signature.
+         */payeePubkey: String?, 
         /**
-         * 32-byte payment hash identifying this payment.
-         */paymentHash: Data, 
+         * Payment hash as lowercase hex (64 chars) identifying this payment.
+         */paymentHash: String, 
         /**
          * Invoice description. None if the invoice uses a description hash.
          */description: String?, 
@@ -3461,8 +5386,8 @@ public struct FfiConverterTypeParsedInvoice: FfiConverterRustBuffer {
         return
             try ParsedInvoice(
                 bolt11: FfiConverterString.read(from: &buf), 
-                payeePubkey: FfiConverterOptionData.read(from: &buf), 
-                paymentHash: FfiConverterData.read(from: &buf), 
+                payeePubkey: FfiConverterOptionString.read(from: &buf), 
+                paymentHash: FfiConverterString.read(from: &buf), 
                 description: FfiConverterOptionString.read(from: &buf), 
                 amountMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 expiry: FfiConverterUInt64.read(from: &buf), 
@@ -3472,8 +5397,8 @@ public struct FfiConverterTypeParsedInvoice: FfiConverterRustBuffer {
 
     public static func write(_ value: ParsedInvoice, into buf: inout [UInt8]) {
         FfiConverterString.write(value.bolt11, into: &buf)
-        FfiConverterOptionData.write(value.payeePubkey, into: &buf)
-        FfiConverterData.write(value.paymentHash, into: &buf)
+        FfiConverterOptionString.write(value.payeePubkey, into: &buf)
+        FfiConverterString.write(value.paymentHash, into: &buf)
         FfiConverterOptionString.write(value.description, into: &buf)
         FfiConverterOptionUInt64.write(value.amountMsat, into: &buf)
         FfiConverterUInt64.write(value.expiry, into: &buf)
@@ -3498,23 +5423,41 @@ public func FfiConverterTypeParsedInvoice_lower(_ value: ParsedInvoice) -> RustB
 
 
 public struct Pay {
-    public var paymentHash: Data
+    /**
+     * Payment hash as lowercase hex (64 chars).
+     */
+    public var paymentHash: String
     public var status: PayStatus
-    public var destinationPubkey: Data?
+    /**
+     * Recipient node pubkey as lowercase hex (66 chars), if known.
+     */
+    public var destinationPubkey: String?
     public var amountMsat: UInt64?
     public var amountSentMsat: UInt64?
     public var label: String?
     public var bolt11: String?
     public var description: String?
     public var bolt12: String?
-    public var preimage: Data?
+    /**
+     * Payment preimage as lowercase hex (64 chars), if the payment completed.
+     */
+    public var preimage: String?
     public var createdAt: UInt64
     public var completedAt: UInt64?
     public var numberOfParts: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(paymentHash: Data, status: PayStatus, destinationPubkey: Data?, amountMsat: UInt64?, amountSentMsat: UInt64?, label: String?, bolt11: String?, description: String?, bolt12: String?, preimage: Data?, createdAt: UInt64, completedAt: UInt64?, numberOfParts: UInt64?) {
+    public init(
+        /**
+         * Payment hash as lowercase hex (64 chars).
+         */paymentHash: String, status: PayStatus, 
+        /**
+         * Recipient node pubkey as lowercase hex (66 chars), if known.
+         */destinationPubkey: String?, amountMsat: UInt64?, amountSentMsat: UInt64?, label: String?, bolt11: String?, description: String?, bolt12: String?, 
+        /**
+         * Payment preimage as lowercase hex (64 chars), if the payment completed.
+         */preimage: String?, createdAt: UInt64, completedAt: UInt64?, numberOfParts: UInt64?) {
         self.paymentHash = paymentHash
         self.status = status
         self.destinationPubkey = destinationPubkey
@@ -3606,16 +5549,16 @@ public struct FfiConverterTypePay: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Pay {
         return
             try Pay(
-                paymentHash: FfiConverterData.read(from: &buf), 
+                paymentHash: FfiConverterString.read(from: &buf), 
                 status: FfiConverterTypePayStatus.read(from: &buf), 
-                destinationPubkey: FfiConverterOptionData.read(from: &buf), 
+                destinationPubkey: FfiConverterOptionString.read(from: &buf), 
                 amountMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 amountSentMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 label: FfiConverterOptionString.read(from: &buf), 
                 bolt11: FfiConverterOptionString.read(from: &buf), 
                 description: FfiConverterOptionString.read(from: &buf), 
                 bolt12: FfiConverterOptionString.read(from: &buf), 
-                preimage: FfiConverterOptionData.read(from: &buf), 
+                preimage: FfiConverterOptionString.read(from: &buf), 
                 createdAt: FfiConverterUInt64.read(from: &buf), 
                 completedAt: FfiConverterOptionUInt64.read(from: &buf), 
                 numberOfParts: FfiConverterOptionUInt64.read(from: &buf)
@@ -3623,16 +5566,16 @@ public struct FfiConverterTypePay: FfiConverterRustBuffer {
     }
 
     public static func write(_ value: Pay, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.paymentHash, into: &buf)
+        FfiConverterString.write(value.paymentHash, into: &buf)
         FfiConverterTypePayStatus.write(value.status, into: &buf)
-        FfiConverterOptionData.write(value.destinationPubkey, into: &buf)
+        FfiConverterOptionString.write(value.destinationPubkey, into: &buf)
         FfiConverterOptionUInt64.write(value.amountMsat, into: &buf)
         FfiConverterOptionUInt64.write(value.amountSentMsat, into: &buf)
         FfiConverterOptionString.write(value.label, into: &buf)
         FfiConverterOptionString.write(value.bolt11, into: &buf)
         FfiConverterOptionString.write(value.description, into: &buf)
         FfiConverterOptionString.write(value.bolt12, into: &buf)
-        FfiConverterOptionData.write(value.preimage, into: &buf)
+        FfiConverterOptionString.write(value.preimage, into: &buf)
         FfiConverterUInt64.write(value.createdAt, into: &buf)
         FfiConverterOptionUInt64.write(value.completedAt, into: &buf)
         FfiConverterOptionUInt64.write(value.numberOfParts, into: &buf)
@@ -3664,12 +5607,46 @@ public struct Payment {
     public var status: PaymentStatus
     public var description: String?
     public var bolt11: String?
-    public var preimage: Data?
-    public var destination: Data?
+    /**
+     * Payment preimage as lowercase hex (64 chars), when known.
+     */
+    public var preimage: String?
+    /**
+     * Pubkey of the counterparty in the payment, as lowercase hex
+     * (66 chars).
+     *
+     * For `PaymentType::Sent`: the recipient node we paid (when CLN
+     * reports it).
+     *
+     * For `PaymentType::Received`: always `None`. Lightning's privacy
+     * model does not reveal the sender's pubkey to the recipient — the
+     * HTLC arrives via one of our channel peers, but that peer is
+     * usually just a router, not the original payer. The only pubkey
+     * derivable from a paid invoice is the *payee* (i.e. our own
+     * node), which is uninteresting to display per-row.
+     */
+    public var destination: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, paymentType: PaymentType, paymentTime: UInt64, amountMsat: UInt64, feeMsat: UInt64, status: PaymentStatus, description: String?, bolt11: String?, preimage: Data?, destination: Data?) {
+    public init(id: String, paymentType: PaymentType, paymentTime: UInt64, amountMsat: UInt64, feeMsat: UInt64, status: PaymentStatus, description: String?, bolt11: String?, 
+        /**
+         * Payment preimage as lowercase hex (64 chars), when known.
+         */preimage: String?, 
+        /**
+         * Pubkey of the counterparty in the payment, as lowercase hex
+         * (66 chars).
+         *
+         * For `PaymentType::Sent`: the recipient node we paid (when CLN
+         * reports it).
+         *
+         * For `PaymentType::Received`: always `None`. Lightning's privacy
+         * model does not reveal the sender's pubkey to the recipient — the
+         * HTLC arrives via one of our channel peers, but that peer is
+         * usually just a router, not the original payer. The only pubkey
+         * derivable from a paid invoice is the *payee* (i.e. our own
+         * node), which is uninteresting to display per-row.
+         */destination: String?) {
         self.id = id
         self.paymentType = paymentType
         self.paymentTime = paymentTime
@@ -3754,8 +5731,8 @@ public struct FfiConverterTypePayment: FfiConverterRustBuffer {
                 status: FfiConverterTypePaymentStatus.read(from: &buf), 
                 description: FfiConverterOptionString.read(from: &buf), 
                 bolt11: FfiConverterOptionString.read(from: &buf), 
-                preimage: FfiConverterOptionData.read(from: &buf), 
-                destination: FfiConverterOptionData.read(from: &buf)
+                preimage: FfiConverterOptionString.read(from: &buf), 
+                destination: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -3768,8 +5745,8 @@ public struct FfiConverterTypePayment: FfiConverterRustBuffer {
         FfiConverterTypePaymentStatus.write(value.status, into: &buf)
         FfiConverterOptionString.write(value.description, into: &buf)
         FfiConverterOptionString.write(value.bolt11, into: &buf)
-        FfiConverterOptionData.write(value.preimage, into: &buf)
-        FfiConverterOptionData.write(value.destination, into: &buf)
+        FfiConverterOptionString.write(value.preimage, into: &buf)
+        FfiConverterOptionString.write(value.destination, into: &buf)
     }
 }
 
@@ -3790,7 +5767,10 @@ public func FfiConverterTypePayment_lower(_ value: Payment) -> RustBuffer {
 
 
 public struct Peer {
-    public var id: Data
+    /**
+     * Peer node public key as lowercase hex (66 chars).
+     */
+    public var id: String
     public var connected: Bool
     public var numChannels: UInt32?
     public var netaddr: [String]
@@ -3799,7 +5779,10 @@ public struct Peer {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: Data, connected: Bool, numChannels: UInt32?, netaddr: [String], remoteAddr: String?, features: Data?) {
+    public init(
+        /**
+         * Peer node public key as lowercase hex (66 chars).
+         */id: String, connected: Bool, numChannels: UInt32?, netaddr: [String], remoteAddr: String?, features: Data?) {
         self.id = id
         self.connected = connected
         self.numChannels = numChannels
@@ -3856,7 +5839,7 @@ public struct FfiConverterTypePeer: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Peer {
         return
             try Peer(
-                id: FfiConverterData.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf), 
                 connected: FfiConverterBool.read(from: &buf), 
                 numChannels: FfiConverterOptionUInt32.read(from: &buf), 
                 netaddr: FfiConverterSequenceString.read(from: &buf), 
@@ -3866,7 +5849,7 @@ public struct FfiConverterTypePeer: FfiConverterRustBuffer {
     }
 
     public static func write(_ value: Peer, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.id, into: &buf)
+        FfiConverterString.write(value.id, into: &buf)
         FfiConverterBool.write(value.connected, into: &buf)
         FfiConverterOptionUInt32.write(value.numChannels, into: &buf)
         FfiConverterSequenceString.write(value.netaddr, into: &buf)
@@ -3892,21 +5875,59 @@ public func FfiConverterTypePeer_lower(_ value: Peer) -> RustBuffer {
 
 
 public struct PeerChannel {
-    public var peerId: Data
+    /**
+     * Peer node public key as lowercase hex (66 chars).
+     */
+    public var peerId: String
     public var peerConnected: Bool
     public var state: ChannelState
     public var shortChannelId: String?
-    public var channelId: Data?
-    public var fundingTxid: Data?
+    /**
+     * Channel id as lowercase hex (64 chars).
+     */
+    public var channelId: String?
+    /**
+     * Funding transaction id as lowercase hex (64 chars).
+     */
+    public var fundingTxid: String?
     public var fundingOutnum: UInt32?
     public var toUsMsat: UInt64?
     public var totalMsat: UInt64?
     public var spendableMsat: UInt64?
     public var receivableMsat: UInt64?
+    /**
+     * Which side initiated the close, if the channel is closing or closed.
+     */
+    public var closer: ChannelSide?
+    /**
+     * Human-readable status strings from CLN, ordered oldest to newest.
+     * For a channel in `Onchain` state, the last entry indicates whether
+     * our payout is still timelocked (`DELAYED_OUTPUT_TO_US`) or already
+     * available in the on-chain balance.
+     */
+    public var status: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(peerId: Data, peerConnected: Bool, state: ChannelState, shortChannelId: String?, channelId: Data?, fundingTxid: Data?, fundingOutnum: UInt32?, toUsMsat: UInt64?, totalMsat: UInt64?, spendableMsat: UInt64?, receivableMsat: UInt64?) {
+    public init(
+        /**
+         * Peer node public key as lowercase hex (66 chars).
+         */peerId: String, peerConnected: Bool, state: ChannelState, shortChannelId: String?, 
+        /**
+         * Channel id as lowercase hex (64 chars).
+         */channelId: String?, 
+        /**
+         * Funding transaction id as lowercase hex (64 chars).
+         */fundingTxid: String?, fundingOutnum: UInt32?, toUsMsat: UInt64?, totalMsat: UInt64?, spendableMsat: UInt64?, receivableMsat: UInt64?, 
+        /**
+         * Which side initiated the close, if the channel is closing or closed.
+         */closer: ChannelSide?, 
+        /**
+         * Human-readable status strings from CLN, ordered oldest to newest.
+         * For a channel in `Onchain` state, the last entry indicates whether
+         * our payout is still timelocked (`DELAYED_OUTPUT_TO_US`) or already
+         * available in the on-chain balance.
+         */status: [String]) {
         self.peerId = peerId
         self.peerConnected = peerConnected
         self.state = state
@@ -3918,6 +5939,8 @@ public struct PeerChannel {
         self.totalMsat = totalMsat
         self.spendableMsat = spendableMsat
         self.receivableMsat = receivableMsat
+        self.closer = closer
+        self.status = status
     }
 }
 
@@ -3961,6 +5984,12 @@ extension PeerChannel: Equatable, Hashable {
         if lhs.receivableMsat != rhs.receivableMsat {
             return false
         }
+        if lhs.closer != rhs.closer {
+            return false
+        }
+        if lhs.status != rhs.status {
+            return false
+        }
         return true
     }
 
@@ -3976,6 +6005,8 @@ extension PeerChannel: Equatable, Hashable {
         hasher.combine(totalMsat)
         hasher.combine(spendableMsat)
         hasher.combine(receivableMsat)
+        hasher.combine(closer)
+        hasher.combine(status)
     }
 }
 
@@ -3988,32 +6019,36 @@ public struct FfiConverterTypePeerChannel: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PeerChannel {
         return
             try PeerChannel(
-                peerId: FfiConverterData.read(from: &buf), 
+                peerId: FfiConverterString.read(from: &buf), 
                 peerConnected: FfiConverterBool.read(from: &buf), 
                 state: FfiConverterTypeChannelState.read(from: &buf), 
                 shortChannelId: FfiConverterOptionString.read(from: &buf), 
-                channelId: FfiConverterOptionData.read(from: &buf), 
-                fundingTxid: FfiConverterOptionData.read(from: &buf), 
+                channelId: FfiConverterOptionString.read(from: &buf), 
+                fundingTxid: FfiConverterOptionString.read(from: &buf), 
                 fundingOutnum: FfiConverterOptionUInt32.read(from: &buf), 
                 toUsMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 totalMsat: FfiConverterOptionUInt64.read(from: &buf), 
                 spendableMsat: FfiConverterOptionUInt64.read(from: &buf), 
-                receivableMsat: FfiConverterOptionUInt64.read(from: &buf)
+                receivableMsat: FfiConverterOptionUInt64.read(from: &buf), 
+                closer: FfiConverterOptionTypeChannelSide.read(from: &buf), 
+                status: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
     public static func write(_ value: PeerChannel, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.peerId, into: &buf)
+        FfiConverterString.write(value.peerId, into: &buf)
         FfiConverterBool.write(value.peerConnected, into: &buf)
         FfiConverterTypeChannelState.write(value.state, into: &buf)
         FfiConverterOptionString.write(value.shortChannelId, into: &buf)
-        FfiConverterOptionData.write(value.channelId, into: &buf)
-        FfiConverterOptionData.write(value.fundingTxid, into: &buf)
+        FfiConverterOptionString.write(value.channelId, into: &buf)
+        FfiConverterOptionString.write(value.fundingTxid, into: &buf)
         FfiConverterOptionUInt32.write(value.fundingOutnum, into: &buf)
         FfiConverterOptionUInt64.write(value.toUsMsat, into: &buf)
         FfiConverterOptionUInt64.write(value.totalMsat, into: &buf)
         FfiConverterOptionUInt64.write(value.spendableMsat, into: &buf)
         FfiConverterOptionUInt64.write(value.receivableMsat, into: &buf)
+        FfiConverterOptionTypeChannelSide.write(value.closer, into: &buf)
+        FfiConverterSequenceString.write(value.status, into: &buf)
     }
 }
 
@@ -4113,16 +6148,34 @@ public func FfiConverterTypeReceiveResponse_lower(_ value: ReceiveResponse) -> R
 
 public struct SendResponse {
     public var status: PayStatus
-    public var preimage: Data
-    public var paymentHash: Data
-    public var destinationPubkey: Data?
+    /**
+     * Payment preimage (proof of payment) as lowercase hex (64 chars).
+     */
+    public var preimage: String
+    /**
+     * Payment hash as lowercase hex (64 chars).
+     */
+    public var paymentHash: String
+    /**
+     * Recipient node pubkey as lowercase hex (66 chars), if known.
+     */
+    public var destinationPubkey: String?
     public var amountMsat: UInt64
     public var amountSentMsat: UInt64
     public var parts: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: PayStatus, preimage: Data, paymentHash: Data, destinationPubkey: Data?, amountMsat: UInt64, amountSentMsat: UInt64, parts: UInt32) {
+    public init(status: PayStatus, 
+        /**
+         * Payment preimage (proof of payment) as lowercase hex (64 chars).
+         */preimage: String, 
+        /**
+         * Payment hash as lowercase hex (64 chars).
+         */paymentHash: String, 
+        /**
+         * Recipient node pubkey as lowercase hex (66 chars), if known.
+         */destinationPubkey: String?, amountMsat: UInt64, amountSentMsat: UInt64, parts: UInt32) {
         self.status = status
         self.preimage = preimage
         self.paymentHash = paymentHash
@@ -4185,9 +6238,9 @@ public struct FfiConverterTypeSendResponse: FfiConverterRustBuffer {
         return
             try SendResponse(
                 status: FfiConverterTypePayStatus.read(from: &buf), 
-                preimage: FfiConverterData.read(from: &buf), 
-                paymentHash: FfiConverterData.read(from: &buf), 
-                destinationPubkey: FfiConverterOptionData.read(from: &buf), 
+                preimage: FfiConverterString.read(from: &buf), 
+                paymentHash: FfiConverterString.read(from: &buf), 
+                destinationPubkey: FfiConverterOptionString.read(from: &buf), 
                 amountMsat: FfiConverterUInt64.read(from: &buf), 
                 amountSentMsat: FfiConverterUInt64.read(from: &buf), 
                 parts: FfiConverterUInt32.read(from: &buf)
@@ -4196,9 +6249,9 @@ public struct FfiConverterTypeSendResponse: FfiConverterRustBuffer {
 
     public static func write(_ value: SendResponse, into buf: inout [UInt8]) {
         FfiConverterTypePayStatus.write(value.status, into: &buf)
-        FfiConverterData.write(value.preimage, into: &buf)
-        FfiConverterData.write(value.paymentHash, into: &buf)
-        FfiConverterOptionData.write(value.destinationPubkey, into: &buf)
+        FfiConverterString.write(value.preimage, into: &buf)
+        FfiConverterString.write(value.paymentHash, into: &buf)
+        FfiConverterOptionString.write(value.destinationPubkey, into: &buf)
         FfiConverterUInt64.write(value.amountMsat, into: &buf)
         FfiConverterUInt64.write(value.amountSentMsat, into: &buf)
         FfiConverterUInt32.write(value.parts, into: &buf)
@@ -4222,6 +6275,79 @@ public func FfiConverterTypeSendResponse_lower(_ value: SendResponse) -> RustBuf
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Which side of a channel performed a given action (e.g. initiated close).
+ */
+
+public enum ChannelSide {
+    
+    case local
+    case remote
+}
+
+
+#if compiler(>=6)
+extension ChannelSide: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChannelSide: FfiConverterRustBuffer {
+    typealias SwiftType = ChannelSide
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChannelSide {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .local
+        
+        case 2: return .remote
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ChannelSide, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .local:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .remote:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChannelSide_lift(_ buf: RustBuffer) throws -> ChannelSide {
+    return try FfiConverterTypeChannelSide.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChannelSide_lower(_ value: ChannelSide) -> RustBuffer {
+    return FfiConverterTypeChannelSide.lower(value)
+}
+
+
+extension ChannelSide: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum ChannelState {
     
@@ -4238,6 +6364,12 @@ public enum ChannelState {
     case dualopendAwaitingLockin
     case dualopendOpenCommitted
     case dualopendOpenCommitReady
+    /**
+     * A state reported by the node that this SDK doesn't recognize.
+     * Returned when CLN introduces a new channel state after this SDK
+     * was built. Treated as neither open nor closing by balance math.
+     */
+    case unknown
 }
 
 
@@ -4280,6 +6412,8 @@ public struct FfiConverterTypeChannelState: FfiConverterRustBuffer {
         case 12: return .dualopendOpenCommitted
         
         case 13: return .dualopendOpenCommitReady
+        
+        case 14: return .unknown
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4339,6 +6473,10 @@ public struct FfiConverterTypeChannelState: FfiConverterRustBuffer {
         
         case .dualopendOpenCommitReady:
             writeInt(&buf, Int32(13))
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(14))
         
         }
     }
@@ -4499,91 +6637,6 @@ extension Error: Foundation.LocalizedError {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * The result of parsing user input.
- */
-
-public enum InputType {
-    
-    /**
-     * A BOLT11 Lightning invoice.
-     */
-    case bolt11(invoice: ParsedInvoice
-    )
-    /**
-     * A Lightning node public key (66 hex characters, 33 bytes compressed).
-     */
-    case nodeId(nodeId: String
-    )
-}
-
-
-#if compiler(>=6)
-extension InputType: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeInputType: FfiConverterRustBuffer {
-    typealias SwiftType = InputType
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InputType {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .bolt11(invoice: try FfiConverterTypeParsedInvoice.read(from: &buf)
-        )
-        
-        case 2: return .nodeId(nodeId: try FfiConverterString.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: InputType, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .bolt11(invoice):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeParsedInvoice.write(invoice, into: &buf)
-            
-        
-        case let .nodeId(nodeId):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(nodeId, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeInputType_lift(_ buf: RustBuffer) throws -> InputType {
-    return try FfiConverterTypeInputType.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeInputType_lower(_ value: InputType) -> RustBuffer {
-    return FfiConverterTypeInputType.lower(value)
-}
-
-
-extension InputType: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum InvoiceStatus {
     
@@ -4734,6 +6787,283 @@ extension ListIndex: Equatable, Hashable {}
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Result of an LNURL-pay operation.
+ */
+
+public enum LnUrlPayResult {
+    
+    /**
+     * Payment succeeded.
+     */
+    case endpointSuccess(data: LnUrlPaySuccessData
+    )
+    /**
+     * The LNURL service returned an error before the invoice was paid.
+     */
+    case endpointError(data: LnUrlErrorData
+    )
+    /**
+     * The invoice was fetched successfully but paying it failed.
+     */
+    case payError(data: LnUrlPayErrorData
+    )
+}
+
+
+#if compiler(>=6)
+extension LnUrlPayResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlPayResult: FfiConverterRustBuffer {
+    typealias SwiftType = LnUrlPayResult
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlPayResult {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .endpointSuccess(data: try FfiConverterTypeLnUrlPaySuccessData.read(from: &buf)
+        )
+        
+        case 2: return .endpointError(data: try FfiConverterTypeLnUrlErrorData.read(from: &buf)
+        )
+        
+        case 3: return .payError(data: try FfiConverterTypeLnUrlPayErrorData.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LnUrlPayResult, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .endpointSuccess(data):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeLnUrlPaySuccessData.write(data, into: &buf)
+            
+        
+        case let .endpointError(data):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeLnUrlErrorData.write(data, into: &buf)
+            
+        
+        case let .payError(data):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeLnUrlPayErrorData.write(data, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayResult_lift(_ buf: RustBuffer) throws -> LnUrlPayResult {
+    return try FfiConverterTypeLnUrlPayResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlPayResult_lower(_ value: LnUrlPayResult) -> RustBuffer {
+    return FfiConverterTypeLnUrlPayResult.lower(value)
+}
+
+
+extension LnUrlPayResult: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Result of an LNURL-withdraw operation.
+ */
+
+public enum LnUrlWithdrawResult {
+    
+    /**
+     * The service accepted our invoice and will pay it.
+     */
+    case ok(data: LnUrlWithdrawSuccessData
+    )
+    /**
+     * The LNURL service returned an error.
+     */
+    case errorStatus(data: LnUrlErrorData
+    )
+}
+
+
+#if compiler(>=6)
+extension LnUrlWithdrawResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLnUrlWithdrawResult: FfiConverterRustBuffer {
+    typealias SwiftType = LnUrlWithdrawResult
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LnUrlWithdrawResult {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .ok(data: try FfiConverterTypeLnUrlWithdrawSuccessData.read(from: &buf)
+        )
+        
+        case 2: return .errorStatus(data: try FfiConverterTypeLnUrlErrorData.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LnUrlWithdrawResult, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .ok(data):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeLnUrlWithdrawSuccessData.write(data, into: &buf)
+            
+        
+        case let .errorStatus(data):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeLnUrlErrorData.write(data, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawResult_lift(_ buf: RustBuffer) throws -> LnUrlWithdrawResult {
+    return try FfiConverterTypeLnUrlWithdrawResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLnUrlWithdrawResult_lower(_ value: LnUrlWithdrawResult) -> RustBuffer {
+    return FfiConverterTypeLnUrlWithdrawResult.lower(value)
+}
+
+
+extension LnUrlWithdrawResult: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Log level for filtering messages.
+ */
+
+public enum LogLevel {
+    
+    case error
+    case warn
+    case info
+    case debug
+    case trace
+}
+
+
+#if compiler(>=6)
+extension LogLevel: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLogLevel: FfiConverterRustBuffer {
+    typealias SwiftType = LogLevel
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LogLevel {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .error
+        
+        case 2: return .warn
+        
+        case 3: return .info
+        
+        case 4: return .debug
+        
+        case 5: return .trace
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LogLevel, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .error:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .warn:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .info:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .debug:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .trace:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogLevel_lift(_ buf: RustBuffer) throws -> LogLevel {
+    return try FfiConverterTypeLogLevel.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogLevel_lower(_ value: LogLevel) -> RustBuffer {
+    return FfiConverterTypeLogLevel.lower(value)
+}
+
+
+extension LogLevel: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum Network {
     
@@ -4815,11 +7145,6 @@ public enum NodeEvent {
      */
     case invoicePaid(details: InvoicePaidEvent
     )
-    /**
-     * An unknown event type was received. This can happen if the
-     * server sends a new event type that this client doesn't know about.
-     */
-    case unknown
 }
 
 
@@ -4840,8 +7165,6 @@ public struct FfiConverterTypeNodeEvent: FfiConverterRustBuffer {
         case 1: return .invoicePaid(details: try FfiConverterTypeInvoicePaidEvent.read(from: &buf)
         )
         
-        case 2: return .unknown
-        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -4854,10 +7177,6 @@ public struct FfiConverterTypeNodeEvent: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
             FfiConverterTypeInvoicePaidEvent.write(details, into: &buf)
             
-        
-        case .unknown:
-            writeInt(&buf, Int32(2))
-        
         }
     }
 }
@@ -4963,6 +7282,123 @@ public func FfiConverterTypeOutputStatus_lower(_ value: OutputStatus) -> RustBuf
 
 
 extension OutputStatus: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The result of `parse_input`: an offline classification of the
+ * input. No HTTP, no I/O. LNURL bech32 strings are returned as their
+ * decoded URL; Lightning Addresses as the unparsed `user@host` form.
+ */
+
+public enum ParsedInput {
+    
+    /**
+     * A BOLT11 Lightning invoice.
+     */
+    case bolt11(invoice: ParsedInvoice
+    )
+    /**
+     * A Lightning node public key.
+     */
+    case nodeId(nodeId: String
+    )
+    /**
+     * An LNURL bech32 string (LUD-01) decoded to its underlying URL.
+     * Pass to `resolve_input` (or fetch yourself) to determine
+     * whether it's a pay, withdraw, or auth endpoint.
+     */
+    case lnUrl(url: String
+    )
+    /**
+     * A Lightning Address (LUD-16) in the form `user@host`. The
+     * well-known URL is not constructed offline; call `resolve_input`
+     * to fetch and classify.
+     */
+    case lnUrlAddress(address: String
+    )
+}
+
+
+#if compiler(>=6)
+extension ParsedInput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeParsedInput: FfiConverterRustBuffer {
+    typealias SwiftType = ParsedInput
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ParsedInput {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .bolt11(invoice: try FfiConverterTypeParsedInvoice.read(from: &buf)
+        )
+        
+        case 2: return .nodeId(nodeId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .lnUrl(url: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .lnUrlAddress(address: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ParsedInput, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .bolt11(invoice):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeParsedInvoice.write(invoice, into: &buf)
+            
+        
+        case let .nodeId(nodeId):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(nodeId, into: &buf)
+            
+        
+        case let .lnUrl(url):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(url, into: &buf)
+            
+        
+        case let .lnUrlAddress(address):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(address, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParsedInput_lift(_ buf: RustBuffer) throws -> ParsedInput {
+    return try FfiConverterTypeParsedInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeParsedInput_lower(_ value: ParsedInput) -> RustBuffer {
+    return FfiConverterTypeParsedInput.lower(value)
+}
+
+
+extension ParsedInput: Equatable, Hashable {}
 
 
 
@@ -5263,6 +7699,475 @@ extension PaymentTypeFilter: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The result of `resolve_input`: a fully-resolved input ready for
+ * the caller's next action. LNURL bech32 strings and Lightning
+ * Addresses are resolved over HTTP into typed pay or withdraw
+ * request data; BOLT11 and node IDs pass through unchanged.
+ */
+
+public enum ResolvedInput {
+    
+    /**
+     * A BOLT11 Lightning invoice. No HTTP was performed.
+     */
+    case bolt11(invoice: ParsedInvoice
+    )
+    /**
+     * A Lightning node public key. No HTTP was performed.
+     */
+    case nodeId(nodeId: String
+    )
+    /**
+     * An LNURL-pay endpoint with the service's parameters fetched.
+     */
+    case lnUrlPay(data: LnUrlPayRequestData
+    )
+    /**
+     * An LNURL-withdraw endpoint with the service's parameters fetched.
+     */
+    case lnUrlWithdraw(data: LnUrlWithdrawRequestData
+    )
+}
+
+
+#if compiler(>=6)
+extension ResolvedInput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeResolvedInput: FfiConverterRustBuffer {
+    typealias SwiftType = ResolvedInput
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ResolvedInput {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .bolt11(invoice: try FfiConverterTypeParsedInvoice.read(from: &buf)
+        )
+        
+        case 2: return .nodeId(nodeId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .lnUrlPay(data: try FfiConverterTypeLnUrlPayRequestData.read(from: &buf)
+        )
+        
+        case 4: return .lnUrlWithdraw(data: try FfiConverterTypeLnUrlWithdrawRequestData.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ResolvedInput, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .bolt11(invoice):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeParsedInvoice.write(invoice, into: &buf)
+            
+        
+        case let .nodeId(nodeId):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(nodeId, into: &buf)
+            
+        
+        case let .lnUrlPay(data):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeLnUrlPayRequestData.write(data, into: &buf)
+            
+        
+        case let .lnUrlWithdraw(data):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeLnUrlWithdrawRequestData.write(data, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResolvedInput_lift(_ buf: RustBuffer) throws -> ResolvedInput {
+    return try FfiConverterTypeResolvedInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResolvedInput_lower(_ value: ResolvedInput) -> RustBuffer {
+    return FfiConverterTypeResolvedInput.lower(value)
+}
+
+
+extension ResolvedInput: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * A processed success action from an LNURL-pay callback.
+ *
+ * For Message and Url this is passed through as-is. For Aes the
+ * ciphertext has been decrypted using the payment preimage.
+ */
+
+public enum SuccessActionProcessed {
+    
+    /**
+     * Display a message to the user.
+     */
+    case message(message: String
+    )
+    /**
+     * Display a URL to the user.
+     */
+    case url(description: String, url: String
+    )
+    /**
+     * Decrypted AES payload (LUD-10).
+     */
+    case aes(description: String, plaintext: String
+    )
+}
+
+
+#if compiler(>=6)
+extension SuccessActionProcessed: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSuccessActionProcessed: FfiConverterRustBuffer {
+    typealias SwiftType = SuccessActionProcessed
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SuccessActionProcessed {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .message(message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .url(description: try FfiConverterString.read(from: &buf), url: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .aes(description: try FfiConverterString.read(from: &buf), plaintext: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SuccessActionProcessed, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .message(message):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .url(description,url):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(description, into: &buf)
+            FfiConverterString.write(url, into: &buf)
+            
+        
+        case let .aes(description,plaintext):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(description, into: &buf)
+            FfiConverterString.write(plaintext, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSuccessActionProcessed_lift(_ buf: RustBuffer) throws -> SuccessActionProcessed {
+    return try FfiConverterTypeSuccessActionProcessed.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSuccessActionProcessed_lower(_ value: SuccessActionProcessed) -> RustBuffer {
+    return FfiConverterTypeSuccessActionProcessed.lower(value)
+}
+
+
+extension SuccessActionProcessed: Equatable, Hashable {}
+
+
+
+
+
+
+
+
+
+/**
+ * Callback interface for receiving log messages.
+ *
+ * `on_log` is invoked on the thread that emitted the log — which can
+ * be any tokio worker or background thread inside the SDK. Keep the
+ * implementation cheap and non-blocking; if you need UI updates,
+ * hand the entry off to your app's main thread.
+ */
+public protocol LogListener: AnyObject, Sendable {
+    
+    func onLog(entry: LogEntry) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceLogListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceLogListener] = [UniffiVTableCallbackInterfaceLogListener(
+        onLog: { (
+            uniffiHandle: UInt64,
+            entry: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLogListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onLog(
+                     entry: try FfiConverterTypeLogEntry_lift(entry)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            let result = try? FfiConverterCallbackInterfaceLogListener.handleMap.remove(handle: uniffiHandle)
+            if result == nil {
+                print("Uniffi callback interface LogListener: handle missing in uniffiFree")
+            }
+        }
+    )]
+}
+
+private func uniffiCallbackInitLogListener() {
+    uniffi_glsdk_fn_init_callback_vtable_loglistener(UniffiCallbackInterfaceLogListener.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceLogListener {
+    fileprivate static let handleMap = UniffiHandleMap<LogListener>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceLogListener : FfiConverter {
+    typealias SwiftType = LogListener
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceLogListener_lift(_ handle: UInt64) throws -> LogListener {
+    return try FfiConverterCallbackInterfaceLogListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceLogListener_lower(_ v: LogListener) -> UInt64 {
+    return FfiConverterCallbackInterfaceLogListener.lower(v)
+}
+
+
+
+
+/**
+ * Callback interface for receiving node events.
+ *
+ * `on_event` is invoked from the SDK's internal event-dispatch task.
+ * Implementations should be cheap and non-blocking; to update UI,
+ * dispatch to the main thread from inside the handler.
+ *
+ * Installed via `NodeBuilder::with_event_listener(...)` so events
+ * emitted during node bring-up are captured. The polling-style
+ * `Node::stream_node_events()` API is still available for callers
+ * that prefer to drive events themselves.
+ */
+public protocol NodeEventListener: AnyObject, Sendable {
+    
+    func onEvent(event: NodeEvent) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNodeEventListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceNodeEventListener] = [UniffiVTableCallbackInterfaceNodeEventListener(
+        onEvent: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNodeEventListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onEvent(
+                     event: try FfiConverterTypeNodeEvent_lift(event)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            let result = try? FfiConverterCallbackInterfaceNodeEventListener.handleMap.remove(handle: uniffiHandle)
+            if result == nil {
+                print("Uniffi callback interface NodeEventListener: handle missing in uniffiFree")
+            }
+        }
+    )]
+}
+
+private func uniffiCallbackInitNodeEventListener() {
+    uniffi_glsdk_fn_init_callback_vtable_nodeeventlistener(UniffiCallbackInterfaceNodeEventListener.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceNodeEventListener {
+    fileprivate static let handleMap = UniffiHandleMap<NodeEventListener>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceNodeEventListener : FfiConverter {
+    typealias SwiftType = NodeEventListener
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceNodeEventListener_lift(_ handle: UInt64) throws -> NodeEventListener {
+    return try FfiConverterCallbackInterfaceNodeEventListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceNodeEventListener_lower(_ v: NodeEventListener) -> UInt64 {
+    return FfiConverterCallbackInterfaceNodeEventListener.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -5386,6 +8291,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeChannelSide: FfiConverterRustBuffer {
+    typealias SwiftType = ChannelSide?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeChannelSide.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeChannelSide.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeListIndex: FfiConverterRustBuffer {
     typealias SwiftType = ListIndex?
 
@@ -5450,6 +8379,30 @@ fileprivate struct FfiConverterOptionTypePayStatus: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypePayStatus.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeSuccessActionProcessed: FfiConverterRustBuffer {
+    typealias SwiftType = SuccessActionProcessed?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSuccessActionProcessed.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSuccessActionProcessed.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -5703,71 +8656,122 @@ fileprivate struct FfiConverterSequenceTypePaymentTypeFilter: FfiConverterRustBu
         return seq
     }
 }
-/**
- * Connect to an existing Greenlight node using previously saved credentials.
- */
-public func connect(mnemonic: String, credentials: Data, config: Config)throws  -> Node  {
-    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
-    uniffi_glsdk_fn_func_connect(
-        FfiConverterString.lower(mnemonic),
-        FfiConverterData.lower(credentials),
-        FfiConverterTypeConfig_lower(config),$0
-    )
-})
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_MAYBE_READY: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureGlsdkInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                uniffiFutureContinuationCallback,
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
+}
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
 }
 /**
- * Parse a string and identify whether it's a BOLT11 invoice or a node ID.
+ * Synchronously classify the input. **No HTTP, no I/O.**
  *
- * Strips `lightning:` / `LIGHTNING:` prefixes automatically.
- * Works offline — no node connection needed.
+ * Recognises BOLT11 invoices, node IDs, LNURL bech32 strings, and
+ * Lightning Addresses. Strips `lightning:` / `LIGHTNING:` prefixes
+ * automatically. LNURL inputs are decoded to their underlying URL
+ * but **not fetched** — the caller chooses whether to resolve
+ * further (via `resolve_input`) or to surface the URL to the user
+ * as-is.
+ *
+ * Use this for offline operations like clipboard validation or
+ * invoice sanity checks. Use `resolve_input` for the QR-scan flow
+ * where you want the resolved pay/withdraw data in one call.
  */
-public func parseInput(input: String)throws  -> InputType  {
-    return try  FfiConverterTypeInputType_lift(try rustCallWithError(FfiConverterTypeError_lift) {
+public func parseInput(input: String)throws  -> ParsedInput  {
+    return try  FfiConverterTypeParsedInput_lift(try rustCallWithError(FfiConverterTypeError_lift) {
     uniffi_glsdk_fn_func_parse_input(
         FfiConverterString.lower(input),$0
     )
 })
 }
 /**
- * Recover credentials for an existing Greenlight node and return a connected Node.
+ * Asynchronously classify and resolve the input.
  *
- * The app should call `node.credentials()` to get the credential bytes
- * and persist them for future `connect()` calls.
+ * Internally calls `parse_input` for offline classification, then
+ * for LNURL bech32 strings and Lightning Addresses performs the
+ * HTTP GET to the LNURL endpoint and returns typed pay or withdraw
+ * request data. For BOLT11 invoices and node IDs it returns
+ * immediately without I/O.
+ *
+ * Strips `lightning:` / `LIGHTNING:` prefixes automatically.
  */
-public func recover(mnemonic: String, config: Config)throws  -> Node  {
-    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
-    uniffi_glsdk_fn_func_recover(
-        FfiConverterString.lower(mnemonic),
-        FfiConverterTypeConfig_lower(config),$0
-    )
-})
+public func resolveInput(input: String)async throws  -> ResolvedInput  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_glsdk_fn_func_resolve_input(FfiConverterString.lower(input)
+                )
+            },
+            pollFunc: ffi_glsdk_rust_future_poll_rust_buffer,
+            completeFunc: ffi_glsdk_rust_future_complete_rust_buffer,
+            freeFunc: ffi_glsdk_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeResolvedInput_lift,
+            errorHandler: FfiConverterTypeError_lift
+        )
 }
 /**
- * Register a new Greenlight node and return a connected Node with signer running.
- *
- * The app should call `node.credentials()` to get the credential bytes
- * and persist them for future `connect()` calls.
+ * Change the log filter at runtime without reinstalling the listener.
  */
-public func register(mnemonic: String, inviteCode: String?, config: Config)throws  -> Node  {
-    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
-    uniffi_glsdk_fn_func_register(
-        FfiConverterString.lower(mnemonic),
-        FfiConverterOptionString.lower(inviteCode),
-        FfiConverterTypeConfig_lower(config),$0
+public func setLogLevel(level: LogLevel)  {try! rustCall() {
+    uniffi_glsdk_fn_func_set_log_level(
+        FfiConverterTypeLogLevel_lower(level),$0
     )
-})
+}
 }
 /**
- * Try to recover an existing node; if none exists, register a new one.
+ * Set up SDK logging. Call once before any other SDK function.
+ *
+ * The listener receives all log messages from the SDK and the
+ * underlying Greenlight client library. Call once, as early as
+ * possible, so early logs are captured. Returns an error if a logger
+ * has already been installed in this process. To change the filter
+ * after installation, use `set_log_level`.
  */
-public func registerOrRecover(mnemonic: String, inviteCode: String?, config: Config)throws  -> Node  {
-    return try  FfiConverterTypeNode_lift(try rustCallWithError(FfiConverterTypeError_lift) {
-    uniffi_glsdk_fn_func_register_or_recover(
-        FfiConverterString.lower(mnemonic),
-        FfiConverterOptionString.lower(inviteCode),
-        FfiConverterTypeConfig_lower(config),$0
+public func setLogger(level: LogLevel, listener: LogListener)throws   {try rustCallWithError(FfiConverterTypeError_lift) {
+    uniffi_glsdk_fn_func_set_logger(
+        FfiConverterTypeLogLevel_lower(level),
+        FfiConverterCallbackInterfaceLogListener_lower(listener),$0
     )
-})
+}
 }
 
 private enum InitializationResult {
@@ -5785,25 +8789,25 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_glsdk_checksum_func_connect() != 43555) {
+    if (uniffi_glsdk_checksum_func_parse_input() != 49187) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_glsdk_checksum_func_parse_input() != 12312) {
+    if (uniffi_glsdk_checksum_func_resolve_input() != 24844) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_glsdk_checksum_func_recover() != 39257) {
+    if (uniffi_glsdk_checksum_func_set_log_level() != 52328) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_glsdk_checksum_func_register() != 39628) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_glsdk_checksum_func_register_or_recover() != 65070) {
+    if (uniffi_glsdk_checksum_func_set_logger() != 10523) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_config_with_developer_cert() != 64194) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_config_with_network() != 35643) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_credentials_node_id() != 16312) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_credentials_save() != 26677) {
@@ -5818,13 +8822,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_glsdk_checksum_method_node_disconnect() != 43626) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_glsdk_checksum_method_node_generate_diagnostic_data() != 10944) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_glsdk_checksum_method_node_get_info() != 39460) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_node_list_funds() != 21692) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_glsdk_checksum_method_node_list_invoices() != 6677) {
+    if (uniffi_glsdk_checksum_method_node_list_invoices() != 44803) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_node_list_payments() != 43756) {
@@ -5837,6 +8844,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_node_list_peers() != 29567) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_node_lnurl_pay() != 61306) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_node_lnurl_withdraw() != 61467) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_node_node_state() != 41833) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_node_onchain_receive() != 46432) {
@@ -5855,6 +8871,21 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_node_stream_node_events() != 5933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodebuilder_connect() != 47474) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodebuilder_recover() != 46087) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodebuilder_register() != 49580) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodebuilder_register_or_recover() != 5543) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodebuilder_with_event_listener() != 56969) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_method_nodeeventstream_next() != 12635) {
@@ -5887,7 +8918,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_glsdk_checksum_constructor_developercert_new() != 57793) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_glsdk_checksum_constructor_node_new() != 7003) {
+    if (uniffi_glsdk_checksum_constructor_nodebuilder_new() != 34740) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_glsdk_checksum_constructor_scheduler_new() != 15239) {
@@ -5899,7 +8930,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_glsdk_checksum_constructor_signer_new_from_seed() != 6776) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_glsdk_checksum_method_loglistener_on_log() != 34844) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_glsdk_checksum_method_nodeeventlistener_on_event() != 17790) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    uniffiCallbackInitLogListener()
+    uniffiCallbackInitNodeEventListener()
     return InitializationResult.ok
 }()
 
