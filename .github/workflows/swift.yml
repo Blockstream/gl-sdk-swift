@@ -2,8 +2,13 @@ name: Publish Swift Bindings
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Branch to build'
+      gl_version:
+        description: 'Greenlight branch to build'
+        required: true
+        type: string
+        default: 'main'
+      tag_version:
+        description: 'Tag to build'
         required: true
         type: string
         default: 'main'
@@ -15,14 +20,6 @@ jobs:
     steps:
       - name: ENV
         run: env
-        
-      - name: Set release version
-        run: |
-          echo "VERSION=$(echo ${{ inputs.version }} | sed 's/bindings_//')" >> $GITHUB_ENV
-          
-      - name: Version
-        run: |
-          echo "New tag: ${VERSION}"
           
       - name: Setup rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -51,7 +48,7 @@ jobs:
         with:
           submodules: 'true'
           repository: Blockstream/greenlight
-          ref: ${{ inputs.version }}
+          ref: ${{ inputs.gl_version }}
           path: .
 
       - name: Update the gl-sdk-swift repo
@@ -59,9 +56,18 @@ jobs:
         run: |
           git checkout main
           
-          
       - uses: Swatinem/rust-cache@v2
-        
+
+      - name: Set build version environment variables
+        run: |
+          echo "VERSION=${{ inputs.tag_version }}" >> $GITHUB_ENV
+
+      - name: Add MARKETING_VERSION to project.yml
+        run: |
+          brew install yq
+          yq e '.targets.glsdkFFI.settings.MARKETING_VERSION = env(VERSION)' -i build/project.yml
+          yq e '.targets.glsdkFFI.settings.CURRENT_PROJECT_VERSION = "1"' -i build/project.yml
+
       - name: Build Swift bindings
         run: |
           task build:ios
@@ -106,9 +112,9 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: "target/glsdkFFI.xcframework.zip"
-          tag: ${{ env.VERSION }}
+          tag: ${{ inputs.tag_version }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          name: ${{ env.VERSION }}
+          name: ${{ inputs.tag_version }}
           prerelease: true
           
       #- name: Push update to Cocoapods trunk
