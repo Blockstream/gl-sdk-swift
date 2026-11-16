@@ -7,7 +7,7 @@ let package = Package(
     name: "glsdk",
     platforms: [
         .macOS(.v12),
-        .iOS(.v13),
+        .iOS(.v15),
     ],
     products: [
         .library(name: "GreenlightSDK", targets: ["glsdkFFI", "GreenlightSDK"]),

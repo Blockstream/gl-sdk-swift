@@ -7,7 +7,7 @@ Pod::Spec.new do |spec|
     spec.authors                = { "Christian Decker" => "decker@blockstream.com" }
     spec.documentation_url      = "https://docs.rs/glsdk"
     spec.source                 = { :git => 'https://github.com/Blockstream/gl-sdk-swift.git', :tag => spec.version }
-    spec.ios.deployment_target  = "13.0"
+    spec.ios.deployment_target  = "15.0"
     spec.source_files           = [
       "Sources/GreenlightSDK/*.swift", 
       "Sources/GreenlightSDK/**/*.swift"

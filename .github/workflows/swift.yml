@@ -67,11 +67,13 @@ jobs:
         run: |
           echo "VERSION=${{ inputs.tag_version }}" >> $GITHUB_ENV
 
-      - name: Add MARKETING_VERSION to project.yml
+      - name: Configure project.yml
         run: |
           brew install yq
           yq e '.targets.glsdkFFI.settings.MARKETING_VERSION = env(VERSION)' -i build/project.yml
           yq e '.targets.glsdkFFI.settings.CURRENT_PROJECT_VERSION = "1"' -i build/project.yml
+          yq e '.targets.glsdkFFI.deploymentTarget = "15.0"' -i build/project.yml
+          sed -E -i '' 's/IPHONEOS_DEPLOYMENT_TARGET=[0-9]+(\.[0-9]+)*/IPHONEOS_DEPLOYMENT_TARGET=15.0/g' build/.tasks.yml
 
       - name: Build Swift bindings
         run: |

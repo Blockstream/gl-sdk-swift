@@ -7,6 +7,6 @@ Pod::Spec.new do |spec|
     spec.authors                = { "Christian Decker" => "decker@blockstream.com" }
     spec.documentation_url      = "https://docs.rs/glsdk"
     spec.source                 = { :http => "https://github.com/Blockstream/gl-sdk-swift/releases/download/0.4.1/glsdkFFI.xcframework.zip" }
-    spec.ios.deployment_target  = "13.0"
+    spec.ios.deployment_target  = "15.0"
     spec.vendored_frameworks    = "glsdkFFI.xcframework"
   end
