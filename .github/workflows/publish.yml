@@ -87,24 +87,8 @@ jobs:
             gh release download "gl-sdk-v$V" -R "$GL_REPO" --dir "$DIR" \
               --pattern glsdkFFI.xcframework.zip --pattern glsdk.swift \
               --pattern glsdkFFI.xcframework.zip.checksum
-            CHECKSUM=$(sha256sum "$DIR/glsdkFFI.xcframework.zip" | cut -d' ' -f1)
-            if [ "$CHECKSUM" != "$(tr -d '[:space:]' < "$DIR/glsdkFFI.xcframework.zip.checksum")" ]; then
-              echo "::error::The zip in gl-sdk-v$V does not match its checksum file"
-              exit 1
-            fi
-
-            export VERSION="$V" XCF_CHECKSUM="$CHECKSUM"
-            export XCF_URL="https://github.com/$GL_REPO/releases/download/gl-sdk-v$V/glsdkFFI.xcframework.zip"
-            for f in Package.swift glsdkFFI.podspec GreenlightSDK.podspec; do
-              envsubst '${VERSION} ${XCF_URL} ${XCF_CHECKSUM}' < "templates/$f" > "$f"
-            done
-            cp "$DIR/glsdk.swift" Sources/GreenlightSDK/GreenlightSDK.swift
-
-            git add Package.swift glsdkFFI.podspec GreenlightSDK.podspec Sources
-            git commit -q -m "Bump Greenlight SDK to version $V" \
-              -m "Built from https://github.com/$GL_REPO/releases/tag/gl-sdk-v$V"
-            git tag -a "$V" -m "$V"
-            git show --stat HEAD
+            scripts/prepare.sh "$V" "$DIR" \
+              "https://github.com/$GL_REPO/releases/download/gl-sdk-v$V/glsdkFFI.xcframework.zip"
 
             if [ "${{ inputs.dry_run }}" = "true" ]; then
               echo "::notice::Dry run, not pushing $V"
@@ -115,19 +99,6 @@ jobs:
               --notes "Greenlight SDK $V, built from [gl-sdk-v$V](https://github.com/$GL_REPO/releases/tag/gl-sdk-v$V). See the [changelog](https://github.com/$GL_REPO/blob/gl-sdk-v$V/libs/gl-sdk/CHANGELOG.md)."
           done
 
-      # What SwiftPM does on install: fetch Package.swift at the tag,
-      # download the binary target and check it against the checksum.
       - name: Verify
         if: env.TODO != '' && inputs.dry_run != true
-        run: |
-          for V in $TODO; do
-            PACKAGE=$(git show "refs/tags/$V:Package.swift")
-            URL=$(grep -oP 'url: "\K[^"]+' <<<"$PACKAGE")
-            EXPECTED=$(grep -oP 'checksum: "\K[0-9a-f]{64}' <<<"$PACKAGE")
-            ACTUAL=$(curl -fsSL "$URL" | sha256sum | cut -d' ' -f1)
-            if [ "$EXPECTED" != "$ACTUAL" ]; then
-              echo "::error::$V: Package.swift checksum $EXPECTED does not match $URL ($ACTUAL)"
-              exit 1
-            fi
-            echo "$V verified: $URL ($ACTUAL)"
-          done
+        run: for V in $TODO; do scripts/verify.sh "$V"; done
