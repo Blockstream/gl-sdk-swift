@@ -13,6 +13,11 @@ on:
         type: string
         default: 'main'
 
+# The repository default for GITHUB_TOKEN is read-only. Pushing the bump
+# commit and tag, and creating the release, need write access.
+permissions:
+  contents: write
+
 jobs:
   build-tag-release:
     name: Build, tag, and release the GL SDK Swift bindings
