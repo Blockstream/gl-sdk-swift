@@ -13,7 +13,7 @@ let package = Package(
         .library(name: "GreenlightSDK", targets: ["glsdkFFI", "GreenlightSDK"]),
     ],
     targets: [
-        .binaryTarget(name: "glsdkFFI", url: "https://github.com/Blockstream/gl-sdk-swift/releases/download/${VERSION}/glsdkFFI.xcframework.zip", checksum: "${XCF_CHECKSUM}"),
+        .binaryTarget(name: "glsdkFFI", url: "${XCF_URL}", checksum: "${XCF_CHECKSUM}"),
         .target(name: "GreenlightSDK", dependencies: ["glsdkFFI"]),
     ]
 )
